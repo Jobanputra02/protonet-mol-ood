@@ -6,8 +6,6 @@ Implementation of Prototypical Networks adapted for regression on molecular prop
 - **Evaluation:** DrugOOD benchmark (scaffold, size, and assay shift)
 - **Task:** Predict continuous activity values (IC50) for molecules from unseen chemical distributions
 
----
-
 ## Background
 
 Standard Prototypical Networks (Snell et al., 2017) are designed for few-shot classification. This implementation adapts them for regression via kernel regression in learned embedding space:
@@ -16,27 +14,32 @@ $$\hat{y}_q = \sum_{i \in \text{support}} \frac{\exp(-d(f(x_q), f(x_i)))}{\sum_j
 
 The embedding function f is trained episodically on FS-Mol. Episodes are constructed to be shift-aware: support and query molecules come from different scaffold families within the same assay, forcing the embedding to be scaffold-invariant. The pretrained model is then evaluated zero-shot on DrugOOD's OOD test splits.
 
----
 
 ## Design Choices
 
-| Component | Chosen | Alternative (commented in code) |
-|---|---|---|
-| Encoder | ECFP4 (2048-bit) + MLP | GNN (GIN/MPNN), ChemBERTa |
-| Distance | Euclidean | Learned MLP metric |
-| Temperature | Learnable scalar | Fixed = 1.0 |
-| Loss | MSE | MAE, Huber |
-| Episodes | Shift-aware (scaffold split) | Random |
-| Evaluation | Zero-shot (frozen encoder) | Few-shot fine-tuning (MAML) |
+| Component | Chosen |
+|---|---|
+| Encoder | ECFP4 (2048-bit) + MLP |
+| Distance | Euclidean |
+| Temperature | Learnable scalar |
+| Loss | MSE |
+| Episodes | Shift-aware (scaffold split) |
+| Evaluation | Zero-shot (frozen encoder) |
 
-All alternatives are documented as commented-out code in the relevant files.
-
----
 
 ## Repository Structure
 
 ```
 .
+├── data
+    ├── drugood/          # DrugOOD pre-built JSON files (3 files used)
+    │   ├── lbap_core_ic50_scaffold.json   # Scaffold shift split
+    │   ├── lbap_core_ic50_size.json       # Molecular size shift split
+    │   └── lbap_core_ic50_assay.json      # Assay condition shift split
+    └── fs-mol/           # FS-Mol assay files (.jsonl.gz, one file per ChEMBL assay)
+        ├── train/        # ~26,868 assays used for episodic pretraining
+        ├── valid/        # 40 assays used for validation during pretraining
+        └── test/         # 157 assays (not used in this work)
 ├── model.py        # Encoder, distance function, prototypical regression network
 ├── data.py         # Episode construction, AssayDataset, DrugOODEvalDataset
 ├── train.py        # Episodic training loop (FS-Mol pretraining)
@@ -44,8 +47,6 @@ All alternatives are documented as commented-out code in the relevant files.
 ├── main.py         # Full pipeline: data loading, pretraining, evaluation
 └── requirements.txt
 ```
-
----
 
 ## Requirements
 
@@ -60,8 +61,6 @@ Install:
 ```bash
 pip install torch numpy scipy rdkit
 ```
-
----
 
 ## Data Setup
 
@@ -89,7 +88,7 @@ Download the pre-built datasets (96 JSON files, based on ChEMBL 30) from:
 
 This implementation uses three files:
 ```
-data/drugood_all/
+data/drugood/
 ├── lbap_core_ic50_scaffold.json
 ├── lbap_core_ic50_size.json
 └── lbap_core_ic50_assay.json
@@ -97,7 +96,6 @@ data/drugood_all/
 
 `lbap` = ligand-based activity prediction, `core` = standard benchmark subset, `ic50` = activity type.
 
----
 
 ## Usage
 
@@ -105,7 +103,7 @@ data/drugood_all/
 
 ```python
 FS_MOL_DIR  = "path/to/data/fs-mol"
-DRUGOOD_DIR = "path/to/data/drugood_all"
+DRUGOOD_DIR = "path/to/data/drugood"
 ```
 
 ### 2. Run the full pipeline
@@ -119,7 +117,7 @@ This will:
 2. Pretrain the Prototypical Network with shift-aware episodes
 3. Evaluate zero-shot on all three DrugOOD IC50 splits
 
-### 3. Quick smoke test
+### 3. Quick test
 
 To verify the pipeline before full training, set these in `main.py`:
 
@@ -129,7 +127,7 @@ n_epochs=3              # in pretrain() call
 n_episodes_train=100    # in pretrain() call
 ```
 
----
+
 
 ## Results
 
@@ -146,10 +144,9 @@ Results from pretraining on ~5k FS-Mol assays (50 epochs, 1000 episodes/epoch):
 - Results are from ~18% of available training data due to RAM constraints — full training expected to improve performance
 - Context set: 64 molecules sampled from `ood_val` with fixed seed 42 for reproducibility
 
----
 
-## Key References
+## References
 
 - Snell et al. (2017) — [Prototypical Networks for Few-shot Learning](https://arxiv.org/abs/1703.05175)
-- Stanley et al. (2021) — [FS-Mol: A Few-Shot Learning Dataset of Molecules](https://openreview.net/forum?id=OpkUhKfuOz)
-- Ji et al. (2022) — [DrugOOD: Out-of-Distribution Dataset Curator and Benchmark for AI-Aided Drug Discovery](https://arxiv.org/abs/2201.09548)
+- Stanley et al. (2021) — [FS-Mol: A Few-Shot Learning Dataset of Molecules](https://openreview.net/forum?id=701FtuyLlAd)
+- Ji et al. (2022) — [DrugOOD: Out-of-Distribution Dataset Curator and Benchmark for AI-Aided Drug Discovery](https://arxiv.org/abs/2201.09637)
