@@ -40,11 +40,11 @@ The embedding function f is trained episodically on FS-Mol. Episodes are constru
         ├── train/        # ~26,868 assays used for episodic pretraining
         ├── valid/        # 40 assays used for validation during pretraining
         └── test/         # 157 assays (not used in this work)
-├── model.py        # Encoder, distance function, prototypical regression network
-├── data.py         # Episode construction, AssayDataset, DrugOODEvalDataset
-├── train.py        # Episodic training loop (FS-Mol pretraining)
-├── evaluate.py     # Zero-shot OOD evaluation (DrugOOD)
-├── main.py         # Full pipeline: data loading, pretraining, evaluation
+├── model.py              # Encoder, distance function, prototypical regression network
+├── data.py               # Episode construction, AssayDataset, DrugOODEvalDataset
+├── train.py              # Episodic training loop (FS-Mol pretraining)
+├── evaluate.py           # Zero-shot OOD evaluation (DrugOOD)
+├── main.py               # Full pipeline: data loading, pretraining, evaluation
 └── requirements.txt
 ```
 
@@ -66,12 +66,7 @@ pip install torch numpy scipy rdkit
 
 ### FS-Mol
 
-1. Clone the FS-Mol repository:
-```bash
-git clone https://github.com/microsoft/FS-Mol.git
-```
-
-2. Download the dataset from the [FS-Mol GitHub README](https://github.com/microsoft/FS-Mol) (direct download link in the README). Extract to a local directory:
+Download the dataset from the [FS-Mol GitHub README](https://github.com/microsoft/FS-Mol) (direct download link in the README). Extract to a local directory:
 ```
 data/fs-mol/
 ├── train/    # ~26,868 .jsonl.gz files
