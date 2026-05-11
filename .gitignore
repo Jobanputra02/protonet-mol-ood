@@ -1,9 +1,9 @@
 # Data (too large for git)
-data/
+/data/
 
-# Model checkpoints and outputs
+# Model checkpoints
 checkpoints/
-outputs/
+# outputs/
 
 # Python
 __pycache__/
