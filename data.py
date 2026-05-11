@@ -1,28 +1,62 @@
 """
-Episode construction for PTN training
-Episode is one few-shot task with a support set (context) and a query set (test)
-here two episodes construction strategies: RANDOM (standard FS-Mol) vs SHIFT-AWARE (scaffold-based split).
-we choose shift-aware episodes (with random as fallback)
+Episode Construction for Prototypical Network Training
+=======================================================
+An "episode" is one few-shot task:
+    - Support set: N molecules with known labels (the context)
+    - Query set:   M molecules to predict
+
+Two episode construction strategies:
+    1. RANDOM:        Support and query sampled randomly from assay.
+                      Standard FS-Mol protocol.
+    2. SHIFT-AWARE:   Support from one scaffold family, query from another.
+                      Forces OOD-robust embedding. USE THIS if prof confirms.
+
+CHOSEN: shift-aware episodes (with random as fallback if scaffold info unavailable).
 """
 
+import gzip
+import json
+import os
 import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from typing import Optional
+
+# RDKit has incomplete type stubs — Pylance reports false positives on its
+# attributes (MolFromSmiles, GetMorganFingerprintAsBitVect, etc.).
+# These are valid at runtime; the "# type: ignore" comments suppress the
+# Pylance errors without affecting execution.
 from rdkit import Chem  # type: ignore
 from rdkit.Chem import AllChem  # type: ignore
 from rdkit.Chem.Scaffolds import MurckoScaffold  # type: ignore
+
+# RDKit 2022+ exposes a new generator API for fingerprints.
+# We use it here to avoid the deprecation warning from GetMorganFingerprintAsBitVect.
+# ALTERNATIVE (old API, still works but warns):
+# AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=2048)
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator  # type: ignore
 _MORGAN_GENERATOR = GetMorganGenerator(radius=2, fpSize=2048)  # type: ignore
 
 
-# fingerprint utility
+# =============================================================================
+# FINGERPRINT UTILITY
+# =============================================================================
 
 def mol_to_fingerprint(smiles: str) -> Optional[np.ndarray]:
     """
-    Convert SMILES string to ECFP4 fingerprint (binary vector, 2048 bits).
-    ECFP4 = module-level _MORGAN_GENERATOR.
-    Returns None if SMILES is invalid (also filtered out in AssayDataset).
+    Convert SMILES string to ECFP4 count fingerprint (2048 bits).
+
+    Returns a COUNT vector (values >= 0, not binary) — each position counts
+    how many times a circular substructure of radius ≤ 2 appears.
+    This matches the precomputed "fingerprints" field in FS-Mol .jsonl.gz files.
+    ECFP4 = radius 2, 2048 bits. Set on the module-level _MORGAN_GENERATOR.
+
+    ALTERNATIVE (MACCS keys, 167 bits):
+    # from rdkit.Chem import MACCSkeys  # type: ignore
+    # fp = MACCSkeys.GenMACCSKeys(mol)
+    # return np.array(fp, dtype=np.float32)
+
+    Returns None if SMILES is invalid (filtered out in AssayDataset).
     """
     mol = Chem.MolFromSmiles(smiles)  # type: ignore[attr-defined]
     if mol is None:
@@ -33,7 +67,9 @@ def mol_to_fingerprint(smiles: str) -> Optional[np.ndarray]:
 
 def get_scaffold(smiles: str) -> Optional[str]:
     """
-    Extract scaffold from a SMILES string. Scaffold (core ring system + linkers, no side chains)
+    Extract Bemis-Murcko scaffold from a SMILES string.
+    Scaffold = core ring system + linkers, no side chains.
+    Used to group molecules by structural family for shift-aware episodes.
     """
     mol = Chem.MolFromSmiles(smiles)  # type: ignore[attr-defined]
     if mol is None:
@@ -45,40 +81,62 @@ def get_scaffold(smiles: str) -> Optional[str]:
         return None
 
 
-# base assay dataset
+# =============================================================================
+# BASE ASSAY DATASET
+# =============================================================================
+
 class AssayDataset:
     """
     Holds all molecules + labels for a single assay.
-    also groups molecules by scaffold for shift-aware episode construction
+    Optionally groups molecules by scaffold for shift-aware episode construction.
     """
 
-    def __init__(self, smiles_list: list[str], labels: list[float], assay_id: str = ""):
+    def __init__(
+        self,
+        smiles_list: list[str],
+        labels: list[float],
+        assay_id: str = "",
+        binary_labels: Optional[list[int]] = None
+    ):
         self.assay_id = assay_id
         self.fingerprints = []
         self.labels = []
         self.scaffolds = []
+        _binary = []
 
-        for smi, lab in zip(smiles_list, labels):
+        for i, (smi, lab) in enumerate(zip(smiles_list, labels)):
             fp = mol_to_fingerprint(smi)
             if fp is not None:
                 self.fingerprints.append(fp)
                 self.labels.append(lab)
                 self.scaffolds.append(get_scaffold(smi))
+                if binary_labels is not None:
+                    _binary.append(binary_labels[i])
 
-        # Keep fingerprints as a plain Python list of 1D arrays instead of single laerge array
-        # conversion is lazily in _indices_to_tensors()
-        self.labels = np.array(self.labels, dtype=np.float32)
+        # Keep fingerprints as a plain Python list of 1D arrays.
+        # Do NOT convert to a single large numpy array here — with 26k assays
+        # loaded simultaneously this causes an OOM error.
+        # Conversion to numpy happens lazily in _indices_to_tensors()
+        # where we only ever need 16-32 rows at a time.
+        self.labels = np.array(self.labels, dtype=np.float32)  # (N,)
+        self.binary_labels = np.array(_binary, dtype=np.int32) if _binary else None
 
-        # group indices by scaffold
+        # Group indices by scaffold
         self.scaffold_groups = {}
         for i, sc in enumerate(self.scaffolds):
             key = sc if sc is not None else "__none__"
             self.scaffold_groups.setdefault(key, []).append(i)
 
-        
-        # Remove any indices from scaffold_groups that are out of bounds. Also removes groups that become empty after filtering. 
-        # this needed otherwise index mismatches when datasets are built via (FS-Mol fast loader)
-        n = len(self.labels)
+        self._validate_scaffold_groups()
+
+    def _validate_scaffold_groups(self):
+        """
+        Remove any indices from scaffold_groups that are out of bounds.
+        Also removes groups that become empty after filtering.
+        This guards against index mismatches when datasets are built via
+        __new__ bypass (FS-Mol fast loader) where groups are built manually.
+        """
+        n = len(self)   # uses __len__ which takes min of fingerprints and labels
         cleaned = {}
         for key, indices in self.scaffold_groups.items():
             valid = [i for i in indices if i < n]
@@ -87,142 +145,343 @@ class AssayDataset:
         self.scaffold_groups = cleaned
 
     def __len__(self):
-        # Always use the smaller of the two so indices are always valid otherwise error when fingerprints and labels are out of sync
+        # Guard against fingerprints and labels being out of sync.
+        # Always use the smaller of the two so indices are always valid.
         return min(len(self.fingerprints), len(self.labels))
 
 
-# episode sampler
+# =============================================================================
+# EPISODE SAMPLER
+# =============================================================================
+
 class EpisodeSampler:
     """
-    Samples one episode (support + query) from an AssayDataset
-    here shift-aware episodes when possible (at least 2 scaffold groups) otherwise random episodes
+    Samples one episode (support + query) from an AssayDataset.
+
+    CHOSEN: shift-aware episodes when possible (at least 2 scaffold groups).
+    Falls back to random if the assay has only one scaffold group.
+
+    ALTERNATIVE (always random):
+    # Use sample_random_episode() exclusively.
+    # Simpler but does not train for OOD robustness.
     """
 
     def __init__(self, n_support: int = 16, n_query: int = 16):
+        """
+        Args:
+            n_support: Number of molecules in the support (context) set per episode.
+            n_query:   Number of molecules in the query set per episode.
+        """
         self.n_support = n_support
         self.n_query = n_query
 
     def sample_episode(self, dataset: AssayDataset, shift_aware: bool = True):
         """
-        shift_aware: True if by scaffold family (if possible) else random.
+        Sample one episode from a dataset.
+
+        Args:
+            dataset:     AssayDataset to sample from
+            shift_aware: If True, try to split support/query by scaffold family.
+                         Falls back to random if not enough scaffold diversity.
+
         Returns:
-            support_fp: (n_support, 2048) float tensor
+            support_fp:     (n_support, 2048) float tensor
             support_labels: (n_support,) float tensor
-            query_fp: (n_query, 2048) float tensor
-            query_labels: (n_query,) float tensor
+            query_fp:       (n_query, 2048) float tensor
+            query_labels:   (n_query,) float tensor
         """
         if shift_aware and len(dataset.scaffold_groups) >= 2:
-            # Support and query come from different scaffold families
-            # Pick two distinct scaffold groups, Sample support from group A, query from group B
-            # The embedding must generalize across scaffold families to predict well
-            # (This is what makes pretraining OOD aware)
-
-            scaffold_keys = list(dataset.scaffold_groups.keys())
-            # shuffle and split: first half scaffold groups = support, second half = query
-            chosen = np.random.choice(len(scaffold_keys), size=2, replace=False)
-            support_scaffold = scaffold_keys[chosen[0]]
-            query_scaffold = scaffold_keys[chosen[1]]
-            support_pool = dataset.scaffold_groups[support_scaffold]
-            query_pool = dataset.scaffold_groups[query_scaffold]
-
-            # sample with replacement if pool is smaller than requested size
-            n_sup = min(self.n_support, len(support_pool))
-            n_qry = min(self.n_query, len(query_pool))
-
-            sup_idx = np.random.choice(support_pool, size=n_sup, replace=len(support_pool) < n_sup)
-            qry_idx = np.random.choice(query_pool, size=n_qry, replace=len(query_pool) < n_qry)
-
+            return self._sample_shift_aware_episode(dataset)
         else:
-            # support and query sampled randomly from the whole assay.
-            # Standard FS-Mol protocol. fallback
-            n_total = len(dataset)
-            all_idx = np.random.permutation(n_total)
+            return self._sample_random_episode(dataset)
 
-            n_sup = min(self.n_support, n_total // 2)
-            n_qry = min(self.n_query, n_total - n_sup)
+    def _sample_shift_aware_episode(self, dataset: AssayDataset):
+        """
+        Support and query come from DIFFERENT scaffold families.
 
-            sup_idx = all_idx[:n_sup]
-            qry_idx = all_idx[n_sup:n_sup + n_qry]
+        Mechanism:
+        1. Pick two distinct scaffold groups (each with >= min_group distinct molecules)
+        2. Sample support from group A, query from group B
+        3. The embedding must generalize across scaffold families to predict well
 
-        # indices to tensors
+        This is what makes pretraining OOD-aware.
+
+        IMPORTANT: singleton scaffold groups (1 molecule) are excluded. Sampling 16
+        molecules with replacement from a size-1 group produces 16 identical copies →
+        uniform softmax weights → prediction = constant → zero gradient. Requiring
+        at least n_support//4 distinct molecules per group ensures meaningful episodes.
+        Falls back to random episode if fewer than 2 usable groups exist.
+        """
+        # Require at least 4 distinct molecules per group (for n_support=16).
+        # Singleton groups cause degenerate episodes: all support copies are identical,
+        # distances are all equal, softmax is uniform → prediction ignores query → no learning.
+        min_group = max(2, self.n_support // 4)
+        usable_keys = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
+
+        if len(usable_keys) < 2:
+            return self._sample_random_episode(dataset)
+
+        chosen = np.random.choice(len(usable_keys), size=2, replace=False)
+        support_scaffold = usable_keys[chosen[0]]
+        query_scaffold   = usable_keys[chosen[1]]
+
+        support_pool = dataset.scaffold_groups[support_scaffold]
+        query_pool   = dataset.scaffold_groups[query_scaffold]
+
+        # Use replace=False when group is large enough; replace=True only as last resort.
+        sup_idx = np.random.choice(support_pool, size=self.n_support,
+                                   replace=len(support_pool) < self.n_support)
+        qry_idx = np.random.choice(query_pool,   size=self.n_query,
+                                   replace=len(query_pool)   < self.n_query)
+
+        return self._indices_to_tensors(dataset, sup_idx, qry_idx)
+
+    def _sample_random_episode(self, dataset: AssayDataset):
+        """
+        Support and query sampled randomly from the whole assay.
+        Standard FS-Mol protocol. Used as fallback or for baseline comparison.
+        """
+        n_total = len(dataset)
+        all_idx = np.random.permutation(n_total)
+
+        n_sup = min(self.n_support, n_total // 2)
+        n_qry = min(self.n_query, n_total - n_sup)
+
+        sup_idx = all_idx[:n_sup]
+        qry_idx = all_idx[n_sup:n_sup + n_qry]
+
+        return self._indices_to_tensors(dataset, sup_idx, qry_idx)
+
+    def _indices_to_tensors(self, dataset, sup_idx, qry_idx):
+        # fingerprints is a list of 1D numpy arrays — stack only the rows we need.
+        # Must use list comprehension (not array indexing) since fingerprints is a list.
         support_fp     = torch.tensor(np.stack([dataset.fingerprints[i] for i in sup_idx]))
         support_labels = torch.tensor(dataset.labels[sup_idx])
         query_fp       = torch.tensor(np.stack([dataset.fingerprints[i] for i in qry_idx]))
         query_labels   = torch.tensor(dataset.labels[qry_idx])
         return support_fp, support_labels, query_fp, query_labels
 
-# fs-mol pretraining dataset
+
+# =============================================================================
+# ON-THE-FLY ASSAY FILE LOADER  (used by FSMolEpisodeDataset)
+# =============================================================================
+
+def _load_assay_file(filepath: str) -> "AssayDataset":
+    """
+    Load one FS-Mol .jsonl.gz file into an AssayDataset without tracking stats.
+    Used by FSMolEpisodeDataset workers to load assays on demand during training,
+    keeping only Relation == "=" (exact measurement) compounds.
+    """
+    fingerprints  = []
+    smiles_list   = []
+    labels        = []
+    binary_labels = []
+    assay_id      = os.path.basename(filepath).replace(".jsonl.gz", "")
+
+    with gzip.open(filepath, "rt", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            mol = json.loads(line)
+
+            if mol.get("Relation", "=") != "=":
+                continue
+
+            fp         = mol.get("fingerprints", None)
+            smi        = mol.get("SMILES", None)
+            label      = mol.get(
+                "LogRegressionProperty",
+                mol.get("RegressionProperty", mol.get("Property", None))
+            )
+            _prop = mol.get("Property", None)
+            bool_label = int(float(_prop)) if _prop is not None else None
+
+            if fp is None or label is None or smi is None or len(fp) != 2048:
+                continue
+            try:
+                fingerprints.append(np.array(fp, dtype=np.float32))
+                smiles_list.append(smi)
+                labels.append(float(label))
+                binary_labels.append(int(bool_label) if bool_label is not None else -1)
+            except (ValueError, TypeError):
+                continue
+
+    n = min(len(fingerprints), len(labels), len(smiles_list))
+    fingerprints  = fingerprints[:n]
+    labels        = labels[:n]
+    smiles_list   = smiles_list[:n]
+    binary_labels = binary_labels[:n]
+
+    dataset = AssayDataset.__new__(AssayDataset)
+    dataset.assay_id     = assay_id
+    dataset.fingerprints = fingerprints
+    dataset.labels       = np.array(labels, dtype=np.float32)
+    dataset.scaffolds    = smiles_list
+
+    dataset.scaffold_groups = {}
+    for i, smi in enumerate(smiles_list):
+        scaffold = get_scaffold(smi)
+        key = scaffold if scaffold is not None else "__none__"
+        dataset.scaffold_groups.setdefault(key, []).append(i)
+
+    bl_arr = np.array(binary_labels, dtype=np.int32) if binary_labels else np.array([], dtype=np.int32)
+    dataset.binary_labels = None if len(bl_arr) == 0 or (bl_arr == -1).all() else bl_arr
+
+    dataset._validate_scaffold_groups()
+    return dataset
+
+
+# =============================================================================
+# FS-MOL PRETRAINING DATASET
+# =============================================================================
+
 class FSMolEpisodeDataset(Dataset):
     """
-    FS-Mol assays into a PyTorch Dataset where each __getitem__ returns one sampled episode from a randomly chosen assay
+    Pool-based episodic dataset for FS-Mol pretraining.
 
-    FS-Mol structure:
-        26k+ assays from ChEMBL
-        assay: list of SMILES, label pairs
-        Labels: binary in original fsmol
+    At construction (and optionally between epochs), loads `pool_size` assays from
+    randomly chosen files into RAM.  Each __getitem__ samples an episode from the
+    in-memory pool — no disk I/O during training, so the GPU stays fed.
 
-    usage:
-    dataset = FSMolEpisodeDataset(assay_list, n_episodes_per_epoch=10000)
-    loader = DataLoader(dataset, batch_size=1, shuffle=True)
-    batch_size=1 because each episode has variable support/query size. for fixed sizes, batch can be >1
+    Call refresh_pool() at the start of each epoch to rotate in new assays and
+    expose the model to the full diversity of the ~16k filtered assays over time.
+
+    Memory footprint: pool_size × ~1.5 MB/assay (fingerprints + labels).
+        pool_size=500  →  ~750 MB
+        pool_size=1000 →  ~1.5 GB
+        pool_size=2000 →  ~3 GB
     """
 
     def __init__(
         self,
-        assay_datasets: list[AssayDataset], 
-        n_episodes_per_epoch: int = 10000,
+        assay_files: list[str],
+        n_episodes_per_epoch: int = 1000,
         n_support: int = 16,
         n_query: int = 16,
-        shift_aware: bool = True):
-
-        self.assay_datasets = [a for a in assay_datasets if len(a) >= n_support + n_query]
-        self.n_episodes = n_episodes_per_epoch
-        self.sampler = EpisodeSampler(n_support, n_query)
+        shift_aware: bool = True,
+        pool_size: int = 1000,
+    ):
+        if not assay_files:
+            raise ValueError("No assay files provided.")
+        self.all_files   = assay_files
+        self.n_episodes  = n_episodes_per_epoch
+        self.n_support   = n_support
+        self.n_query     = n_query
+        self.sampler     = EpisodeSampler(n_support, n_query)
         self.shift_aware = shift_aware
+        self.pool_size   = pool_size
+        self._pool: list = []
+        self.refresh_pool(verbose=True)
 
-        if len(self.assay_datasets) == 0:
-            raise ValueError("No assays with enough molecules for episode sampling.")
+    def refresh_pool(self, verbose: bool = False) -> None:
+        """
+        Load a fresh random subset of assay files into memory.
+        Call between epochs to ensure the model sees the full dataset over time.
+        """
+        n       = min(self.pool_size, len(self.all_files))
+        files   = np.random.choice(self.all_files, size=n, replace=False)
+        pool    = []
+        min_len = self.n_support + self.n_query
+        for path in files:
+            ds = _load_assay_file(path)
+            if len(ds) >= min_len:
+                pool.append(ds)
+        if not pool:
+            raise ValueError(
+                f"Pool is empty after sampling {n} files — "
+                f"no assay has >= {min_len} exact-measurement molecules."
+            )
+        self._pool = pool
+        if verbose:
+            print(f"  Pool loaded: {len(pool)} assays in RAM ({n} files sampled)")
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.n_episodes
 
     def __getitem__(self, idx):
-        # Each call samples a new episode from a random assay
-        assay = self.assay_datasets[np.random.randint(len(self.assay_datasets))]
-        return self.sampler.sample_episode(assay, shift_aware=self.shift_aware)
+        ds = self._pool[np.random.randint(len(self._pool))]
+        return self.sampler.sample_episode(ds, shift_aware=self.shift_aware)
 
 
-# drugood evaluation dataset
+# =============================================================================
+# DRUGOOD EVALUATION DATASET
+# =============================================================================
+
 class DrugOODEvalDataset:
     """
-    DrugOOD provides splits defined by distribution shift type:
-        - scaffold shift: test molecules have different core scaffold than train
-        - size shift: test molecules are larger/smaller than train
-        - assay shift: test from different experimental conditions
-    we treat the test set as query and use a small context set (support) from the test distribution
-    (zero-shot: no gradient updates, just forward pass with test context)
-    Alternative to implement: few-shot fine-tuning with gradient steps (MAML-style inner loop).
+    Wraps DrugOOD splits for multi-scale zero-shot evaluation.
+
+    Stores the full train pool (context) plus ood_test and iid_test query sets.
+    Context is subsampled at call time to test multiple sizes (64/128/256/512).
+
+    Protocol:
+        Context = sampled from train (in-distribution labeled support)
+        Query   = ood_test (OOD shift) or iid_test (in-distribution test)
     """
 
     def __init__(
         self,
-        test_smiles: list[str],
-        test_labels: list[float],
         context_smiles: list[str],
         context_labels: list[float],
-        split_type: str  # only for logging
+        ood_test_smiles: list[str],
+        ood_test_labels: list[float],
+        iid_test_smiles: list[str],
+        iid_test_labels: list[float],
+        split_type: str = "scaffold",
+        context_binary_labels: Optional[list[int]] = None,
+        ood_test_binary_labels: Optional[list[int]] = None,
+        iid_test_binary_labels: Optional[list[int]] = None,
     ):
         self.split_type = split_type
 
-        context_dataset = AssayDataset(context_smiles, context_labels)
-        test_dataset = AssayDataset(test_smiles, test_labels)
+        ctx_ds     = AssayDataset(context_smiles, context_labels)
+        ood_ds     = AssayDataset(ood_test_smiles, ood_test_labels)
+        iid_ds     = AssayDataset(iid_test_smiles, iid_test_labels)
 
-        # fingerprints is now a list of 1D arrays — stack before converting to tensor
-        self.context_fp     = torch.tensor(np.stack(context_dataset.fingerprints))
-        self.context_labels = torch.tensor(context_dataset.labels)
-        self.test_fp        = torch.tensor(np.stack(test_dataset.fingerprints))
-        self.test_labels    = torch.tensor(test_dataset.labels)
+        # Full context pool — subsampled at episode time
+        self.context_fp     = torch.tensor(np.stack(ctx_ds.fingerprints))
+        self.context_labels = torch.tensor(ctx_ds.labels)
+        self.context_binary = np.array(context_binary_labels, dtype=np.int32) \
+                              if context_binary_labels is not None else None
 
-    def get_episode(self):
-        """Returns the full context (support) and test (query) sets."""
-        return self.context_fp, self.context_labels, self.test_fp, self.test_labels
+        self.ood_test_fp     = torch.tensor(np.stack(ood_ds.fingerprints))
+        self.ood_test_labels = torch.tensor(ood_ds.labels)
+        self.ood_test_binary = np.array(ood_test_binary_labels, dtype=np.int32) \
+                               if ood_test_binary_labels is not None else None
+
+        self.iid_test_fp     = torch.tensor(np.stack(iid_ds.fingerprints)) \
+                               if iid_ds.fingerprints else torch.zeros(0, 2048)
+        self.iid_test_labels = torch.tensor(iid_ds.labels) \
+                               if len(iid_ds.labels) else torch.zeros(0)
+        self.iid_test_binary = np.array(iid_test_binary_labels, dtype=np.int32) \
+                               if iid_test_binary_labels is not None else None
+
+    def get_episode(
+        self,
+        context_size: int = 64,
+        query_set: str = "ood_test",
+        seed: int = 42,
+    ):
+        """
+        Sample context_size molecules from the train pool and return the chosen query set.
+
+        Args:
+            context_size: How many context molecules to sample (64 / 128 / 256 / 512)
+            query_set:    "ood_test" or "iid_test"
+            seed:         Fixed seed for reproducibility across context sizes
+
+        Returns:
+            ctx_fp, ctx_labels, test_fp, test_labels, test_binary_labels
+        """
+        rng   = np.random.RandomState(seed)
+        n_ctx = min(context_size, len(self.context_fp))
+        idx   = rng.choice(len(self.context_fp), size=n_ctx, replace=False)
+
+        ctx_fp     = self.context_fp[idx]
+        ctx_labels = self.context_labels[idx]
+
+        if query_set == "ood_test":
+            return ctx_fp, ctx_labels, self.ood_test_fp, self.ood_test_labels, self.ood_test_binary
+        else:
+            return ctx_fp, ctx_labels, self.iid_test_fp, self.iid_test_labels, self.iid_test_binary
