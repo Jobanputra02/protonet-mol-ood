@@ -1,0 +1,5 @@
+,fsmol_train,fsmol_test,drugood_train,drugood_ood
+molecular_mass,394.53,364.24,553.92,327.5
+n_heavy_atoms,27.8,25.71,39.3,22.47
+n_rotatable_bonds,5.44,4.78,8.77,4.63
+n_aromatic_rings,2.59,2.57,3.46,2.05

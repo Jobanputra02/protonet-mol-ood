@@ -68,6 +68,7 @@ def plot_fsmol_line(df: pd.DataFrame) -> None:
             )
 
         ax.axhline(0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+        ax.set_xticks(sorted(df["support_size"].unique()))
         ax.set_xlabel("Support set size", fontsize=11)
         ax.set_ylabel(ylabel, fontsize=11)
         ax.set_title(f"FS-Mol Test: {ylabel} vs Support Size", fontsize=12)

@@ -9,6 +9,7 @@ Protocol (CHOSEN: zero-shot):
     - Primary metric: Delta AUPRC (AUPRC(model) - fraction_actives)
 """
 
+import os
 import torch
 import numpy as np
 import pandas as pd
@@ -16,6 +17,8 @@ from scipy import stats
 from sklearn.metrics import average_precision_score
 from model import PrototypicalNetworkRegression
 from data import DrugOODEvalDataset, AssayDataset
+
+from config import RESULTS_DIR
 
 
 # =============================================================================
@@ -166,8 +169,8 @@ def load_and_evaluate(
 
     df = evaluate_drugood_multiscale(model, eval_datasets, device, context_sizes, seeds)
 
-    import os
-    out_path = os.path.join(os.path.dirname(checkpoint_path), "drugood_results.csv")
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    out_path = os.path.join(RESULTS_DIR, "drugood_results.csv")
     df.to_csv(out_path)
     print(f"\nResults saved → {out_path}")
     return df
