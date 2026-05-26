@@ -3,8 +3,8 @@
 Main Entry Point
 ================
 Full pipeline:
-1. Load FS-Mol assays (.jsonl.gz files) → pretrain prototypical network
-2. Load DrugOOD JSON splits → evaluate OOD generalization
+1. Load FS-Mol assays (.jsonl.gz files) => pretrain prototypical network
+2. Load DrugOOD JSON splits => evaluate OOD generalization
 
 All paths are centralised in config.py — edit ENV there to switch environments.
 """
@@ -13,12 +13,22 @@ import gzip
 import os
 from typing import Optional
 import numpy as np
+import torch
 from config import (FSMOL_TRAIN, FSMOL_VAL, FSMOL_TEST,
-                    DRUGOOD_DIR, MODEL_SAVE_PATH, CHECKPOINT_DIR, RESULTS_DIR)
+                    DRUGOOD_DIR, CHECKPOINT_DIR, RESULTS_DIR,
+                    PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT,
+                    PTN_ECFP_REGRESSION_RANDOM_CHECKPOINT,
+                    PTN_ECFP_CLASSIFICATION_SHIFT_CHECKPOINT,
+                    PTN_ECFP_CLASSIFICATION_RANDOM_CHECKPOINT,
+                    PTN_GNN_REGRESSION_SHIFT_CHECKPOINT,
+                    PTN_GNN_REGRESSION_RANDOM_CHECKPOINT,
+                    PTN_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
+                    PTN_GNN_CLASSIFICATION_RANDOM_CHECKPOINT)
 from data import AssayDataset, DrugOODEvalDataset, get_scaffold
-from train import pretrain
+from model import ECFPEncoder, PNAGNNEncoder
+from featurize import NODE_FEAT_DIM, EDGE_FEAT_DIM, compute_degree_histogram
+from train import pretrain_regression, pretrain_classification
 from evaluate import load_and_evaluate, evaluate_inside_task_ood, evaluate_fsmol_test
-
 
 # =============================================================================
 # FS-MOL LOADER
@@ -50,13 +60,13 @@ def load_fsmol_assay(filepath: str) -> tuple[AssayDataset, dict]:
             "n_kept":    molecules in returned dataset,
         }
     """
-    fingerprints   = []
-    smiles_list    = []
-    labels         = []
-    binary_labels  = []
-    assay_id       = os.path.basename(filepath).replace(".jsonl.gz", "")
+    fingerprints = []
+    smiles_list = []
+    labels = []
+    binary_labels = []
+    assay_id = os.path.basename(filepath).replace(".jsonl.gz", "")
 
-    n_total   = 0
+    n_total = 0
     n_inexact = 0
     n_invalid = 0
 
@@ -74,9 +84,9 @@ def load_fsmol_assay(filepath: str) -> tuple[AssayDataset, dict]:
                 n_inexact += 1
                 continue
 
-            fp         = mol.get("fingerprints", None)
-            smi        = mol.get("SMILES", None)
-            label      = mol.get(
+            fp = mol.get("fingerprints", None)
+            smi = mol.get("SMILES", None)
+            label = mol.get(
                 "LogRegressionProperty",
                 mol.get("RegressionProperty", mol.get("Property", None))
             )
@@ -98,19 +108,19 @@ def load_fsmol_assay(filepath: str) -> tuple[AssayDataset, dict]:
 
     # Hard-sync lengths — if any conversion failed silently, truncate to minimum
     n = min(len(fingerprints), len(labels), len(smiles_list), len(binary_labels))
-    fingerprints  = fingerprints[:n]
-    labels        = labels[:n]
-    smiles_list   = smiles_list[:n]
+    fingerprints = fingerprints[:n]
+    labels = labels[:n]
+    smiles_list = smiles_list[:n]
     binary_labels = binary_labels[:n]
 
     # Build AssayDataset bypassing RDKit fingerprint computation
     # by injecting precomputed fingerprints directly after construction.
     dataset = AssayDataset.__new__(AssayDataset)
-    dataset.assay_id     = assay_id
+    dataset.assay_id = assay_id
     # Keep as list — do NOT call np.array() here (causes OOM across 26k assays)
     dataset.fingerprints = fingerprints
-    dataset.labels       = np.array(labels, dtype=np.float32)
-    dataset.scaffolds    = smiles_list
+    dataset.labels = np.array(labels, dtype=np.float32)
+    dataset.scaffolds = smiles_list
 
     # Scaffold groups built from the SAME filtered list used to populate
     # fingerprints/labels — indices are guaranteed to match.
@@ -126,10 +136,10 @@ def load_fsmol_assay(filepath: str) -> tuple[AssayDataset, dict]:
     dataset._validate_scaffold_groups()
 
     stats = {
-        "n_total":   n_total,
+        "n_total": n_total,
         "n_inexact": n_inexact,
         "n_invalid": n_invalid,
-        "n_kept":    n,
+        "n_kept": n,
     }
     return dataset, stats
 
@@ -159,20 +169,20 @@ def load_fsmol_split(split_dir: str, max_assays: Optional[int] = None) -> list[A
     assays = []
 
     # Aggregate data-loss counters across all assay files
-    total_mols           = 0
-    total_inexact        = 0
-    total_invalid        = 0
-    mols_in_kept_tasks   = 0   # exact+valid molecules in tasks that pass size filter
+    total_mols = 0
+    total_inexact = 0
+    total_invalid = 0
+    mols_in_kept_tasks = 0  # exact+valid molecules in tasks that pass size filter
     mols_in_dropped_tasks = 0  # exact+valid molecules lost because their task was too small
-    n_tasks_raw          = len(files)
-    n_tasks_dropped      = 0
+    n_tasks_raw = len(files)
+    n_tasks_dropped = 0
 
     for i, filepath in enumerate(files):
         if i % 500 == 0:
-            print(f"  Loading assay {i+1}/{len(files)}...", end="\r")
+            print(f"  Loading assay {i + 1}/{len(files)}...", end="\r")
         dataset, stats = load_fsmol_assay(filepath)
 
-        total_mols    += stats["n_total"]
+        total_mols += stats["n_total"]
         total_inexact += stats["n_inexact"]
         total_invalid += stats["n_invalid"]
 
@@ -180,33 +190,33 @@ def load_fsmol_split(split_dir: str, max_assays: Optional[int] = None) -> list[A
             assays.append(dataset)
             mols_in_kept_tasks += stats["n_kept"]
         else:
-            n_tasks_dropped      += 1
+            n_tasks_dropped += 1
             mols_in_dropped_tasks += stats["n_kept"]
 
     total_lost = total_inexact + total_invalid + mols_in_dropped_tasks
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Data-loss report: {os.path.basename(split_dir)}/")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Molecules in raw files        : {total_mols:>10,}")
     print(f"  -- Dropped (inexact Relation) : {total_inexact:>10,}  "
-          f"({100*total_inexact/max(total_mols,1):.1f}%)")
+          f"({100 * total_inexact / max(total_mols, 1):.1f}%)")
     print(f"  -- Dropped (bad/missing fields): {total_invalid:>9,}  "
-          f"({100*total_invalid/max(total_mols,1):.1f}%)")
+          f"({100 * total_invalid / max(total_mols, 1):.1f}%)")
     print(f"  -- Dropped (task too small)   : {mols_in_dropped_tasks:>10,}  "
-          f"({100*mols_in_dropped_tasks/max(total_mols,1):.1f}%)")
+          f"({100 * mols_in_dropped_tasks / max(total_mols, 1):.1f}%)")
     print(f"  ----------------------------------------")
     print(f"  Total molecules lost          : {total_lost:>10,}  "
-          f"({100*total_lost/max(total_mols,1):.1f}%)")
+          f"({100 * total_lost / max(total_mols, 1):.1f}%)")
     print(f"  Molecules used for training   : {mols_in_kept_tasks:>10,}  "
-          f"({100*mols_in_kept_tasks/max(total_mols,1):.1f}%)")
+          f"({100 * mols_in_kept_tasks / max(total_mols, 1):.1f}%)")
     print(f"  ---")
     print(f"  Tasks in directory            : {n_tasks_raw:>10,}")
     print(f"  Tasks dropped (<{MIN_TASK_SIZE} molecules)  : {n_tasks_dropped:>10,}  "
-          f"({100*n_tasks_dropped/max(n_tasks_raw,1):.1f}%)")
+          f"({100 * n_tasks_dropped / max(n_tasks_raw, 1):.1f}%)")
     print(f"  Tasks kept                    : {len(assays):>10,}  "
-          f"({100*len(assays)/max(n_tasks_raw,1):.1f}%)")
-    print(f"{'='*60}")
+          f"({100 * len(assays) / max(n_tasks_raw, 1):.1f}%)")
+    print(f"{'=' * 60}")
 
     return assays
 
@@ -222,7 +232,7 @@ def get_ram_usage():
 # Confirmed JSON structure (from inspection):
 #   data["split"]["train"]    — training molecules
 #   data["split"]["ood_val"]  — OOD validation
-#   data["split"]["ood_test"] — OOD test       → use as query set
+#   data["split"]["ood_test"] — OOD test       => use as query set
 #   data["split"]["iid_val"]  — IID validation
 #   data["split"]["iid_test"] — IID test
 #
@@ -251,8 +261,8 @@ def load_drugood_split(json_path: str, split_type: str) -> DrugOODEvalDataset:
     def extract(entries: list) -> tuple[list[str], list[float], list[int]]:
         smiles, labels, binary = [], [], []
         for entry in entries:
-            smi     = entry.get("smiles", None)
-            lab     = entry.get("reg_label", None)
+            smi = entry.get("smiles", None)
+            lab = entry.get("reg_label", None)
             cls_lab = entry.get("cls_label", None)
             if smi and lab is not None:
                 try:
@@ -263,9 +273,9 @@ def load_drugood_split(json_path: str, split_type: str) -> DrugOODEvalDataset:
                     continue
         return smiles, labels, binary
 
-    context_smiles, context_labels, context_binary     = extract(split["train"])
-    ood_test_smiles, ood_test_labels, ood_test_binary  = extract(split["ood_test"])
-    iid_test_smiles, iid_test_labels, iid_test_binary  = extract(split.get("iid_test", []))
+    context_smiles, context_labels, context_binary = extract(split["train"])
+    ood_test_smiles, ood_test_labels, ood_test_binary = extract(split["ood_test"])
+    iid_test_smiles, iid_test_labels, iid_test_binary = extract(split.get("iid_test", []))
 
     print(f"  {split_type}: train pool={len(context_labels)}, "
           f"ood_test={len(ood_test_labels)}, iid_test={len(iid_test_labels)}")
@@ -293,11 +303,61 @@ if __name__ == "__main__":
     import psutil
     import pandas as pd
 
+    # ==========================================================================
+    # EXPERIMENT CONFIGURATION — edit this block to select what to train/eval.
+    #
+    # MODEL_HEAD:     "regression"     => PrototypicalNetworkRegression
+    #                                    kernel regression, MSE loss (Part 0)
+    #                 "classification" => PrototypicalNetworkClassification
+    #                                    true PN binary active/inactive, BCE loss (Part A)
+    #
+    # ENCODER:        "ecfp"           => ECFPEncoder (2048-bit Morgan fingerprints)
+    #                 "gnn"            => PNAGNNEncoder (6-layer PNA GNN, FS-Mol featurisation)
+    #
+    # TRAINING_SPLIT: "shift_aware"   => support from one scaffold group, query
+    #                                    from different groups (OOD-aware episodes)
+    #                 "random"        => support and query drawn randomly (IID episodes)
+    # ==========================================================================
+    MODEL_HEAD     = "classification"  # "regression" | "classification"
+    ENCODER        = "gnn"            # "ecfp" | "gnn"
+    TRAINING_SPLIT = "shift_aware"    # "shift_aware" | "random"
+    SEED           = 42               # fixed for reproducibility — change to run a different seed
+    SKIP_TRAINING  = False             # True = load existing checkpoint, skip steps 1-2 pretraining
+
+    # Checkpoint paths are defined in config.py (one per model combination).
+    # Add a new entry there when introducing a new encoder, head, or split.
+    CHECKPOINT_MAP = {
+        ("ecfp", "regression", "shift_aware"): PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT,
+        ("ecfp", "regression", "random"): PTN_ECFP_REGRESSION_RANDOM_CHECKPOINT,
+        ("ecfp", "classification", "shift_aware"): PTN_ECFP_CLASSIFICATION_SHIFT_CHECKPOINT,
+        ("ecfp", "classification", "random"): PTN_ECFP_CLASSIFICATION_RANDOM_CHECKPOINT,
+        ("gnn", "regression", "shift_aware"): PTN_GNN_REGRESSION_SHIFT_CHECKPOINT,
+        ("gnn", "regression", "random"): PTN_GNN_REGRESSION_RANDOM_CHECKPOINT,
+        ("gnn", "classification", "shift_aware"): PTN_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
+        ("gnn", "classification", "random"): PTN_GNN_CLASSIFICATION_RANDOM_CHECKPOINT,
+    }
+    save_path = CHECKPOINT_MAP[(ENCODER, MODEL_HEAD, TRAINING_SPLIT)]
+
+    # Pretrain functions are named pretrain_{head} — import from train.py.
+    PRETRAIN_FN_MAP = {
+        "regression": pretrain_regression,
+        "classification": pretrain_classification,
+    }
+    pretrain_fn = PRETRAIN_FN_MAP[MODEL_HEAD]
+
+    shift_aware = (TRAINING_SPLIT == "shift_aware")
+
+    # Unique tag for all output files from this run — keeps results from different
+    # configurations in the same RESULTS_DIR without overwriting each other.
+    run_tag = f"{ENCODER}_{MODEL_HEAD}_{TRAINING_SPLIT}"
+
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     os.makedirs(RESULTS_DIR, exist_ok=True)
 
+
     def ram_gb() -> float:
         return psutil.Process().memory_info().rss / 1e9
+
 
     def get_assay_files(split_dir: str) -> list[str]:
         return sorted([
@@ -306,8 +366,12 @@ if __name__ == "__main__":
             if f.endswith(".jsonl.gz")
         ])
 
+
     print("=" * 60)
-    print("Prototypical Network: Molecular OOD Regression")
+    print(f"Prototypical Network: Molecular OOD")
+    print(f"  encoder={ENCODER}  head={MODEL_HEAD}  split={TRAINING_SPLIT}")
+    print(f"  run_tag => {run_tag}")
+    print(f"  checkpoint => {save_path}")
     print("=" * 60)
 
     # ------------------------------------------------------------------
@@ -315,33 +379,71 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     print("\n[1/4] Indexing FS-Mol files...")
     train_files = get_assay_files(FSMOL_TRAIN)
-    val_files   = get_assay_files(FSMOL_VAL)
-    test_files  = get_assay_files(FSMOL_TEST)
+    val_files = get_assay_files(FSMOL_VAL)
+    test_files = get_assay_files(FSMOL_TEST)
     print(f"  Train: {len(train_files)}  Val: {len(val_files)}  Test: {len(test_files)}")
     print(f"  RAM: {ram_gb():.1f} GB")
 
     # ------------------------------------------------------------------
-    # STEP 2: Pretrain on FS-Mol (episodic, streaming from disk)
+    # STEP 2: Build encoder + pretrain, OR load existing checkpoint
     # ------------------------------------------------------------------
-    print("\n[2/4] Pretraining on FS-Mol...")
-    model = pretrain(
-        train_assays=train_files,
-        val_assays=val_files,
-        n_epochs=100,
-        n_support=16,
-        n_query=16,
-        n_episodes_train=1000,
-        n_episodes_val=200,
-        lr=1e-3,
-        embedding_dim=256,
-        hidden_dim=512,
-        save_path=MODEL_SAVE_PATH,
-        shift_aware=True,
-    )
-    print(f"  RAM after pretrain: {ram_gb():.1f} GB")
+    if SKIP_TRAINING:
+        print("\n[2/4] Loading existing checkpoint (SKIP_TRAINING=True)...")
+        from evaluate import _load_model_from_checkpoint
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model, _ = _load_model_from_checkpoint(save_path, device)
+        model.eval()
+        print(f"  Loaded from {save_path}")
+        print(f"  RAM: {ram_gb():.1f} GB")
+    else:
+        print("\n[2/4] Pretraining on FS-Mol...")
 
-    device = next(model.parameters()).device
-    model.eval()
+        if ENCODER == "gnn":
+            print("  Computing degree histogram for PNA scalers...")
+            deg = compute_degree_histogram(train_files, n_sample=500)
+            encoder = PNAGNNEncoder(
+                node_feat_dim=NODE_FEAT_DIM,
+                edge_feat_dim=EDGE_FEAT_DIM,
+                hidden_channels=128,
+                num_layers=6,
+                embedding_dim=256,
+                deg=deg,
+            )
+        else:  # ecfp
+            encoder = ECFPEncoder(input_dim=2048, hidden_dim=512, embedding_dim=256)
+
+        # GNN needs a lower LR — 1e-3 causes gradient instability through 6 PNA layers
+        # and BCE gets stuck at ln(2)=0.6931 (random-classifier output) the entire run.
+        lr = 1e-4 if ENCODER == "gnn" else 1e-3
+
+        model = pretrain_fn(
+            encoder,
+            train_assays=train_files,
+            val_assays=val_files,
+            n_epochs=100,
+            n_support=32,       # was 16 — larger episodes use A100 more efficiently
+            n_query=64,         # was 16 — matches FS-Mol training regime (n_support=64, n_query=256)
+            n_episodes_train=500,  # was 1000 — episode is 4× larger so same total molecules/epoch
+            n_episodes_val=200,
+            lr=lr,
+            save_path=save_path,
+            shift_aware=shift_aware,
+            seed=SEED,
+        )
+        print(f"  RAM after pretrain: {ram_gb():.1f} GB")
+
+        device = next(model.parameters()).device
+        model.eval()
+
+    # Compile model for A100 Tensor Core acceleration.
+    # dynamic=True handles variable graph sizes (different atom counts per molecule).
+    # Falls back to eager silently on older PyTorch or unsupported platforms.
+    if torch.cuda.is_available():
+        try:
+            model = torch.compile(model, dynamic=True)
+            print("  torch.compile enabled (dynamic=True)")
+        except Exception as e:
+            print(f"  torch.compile unavailable ({e}) — running eager mode")
 
     # ------------------------------------------------------------------
     # STEP 3: DrugOOD evaluation — zero-shot OOD with context from train
@@ -365,10 +467,13 @@ if __name__ == "__main__":
     print(f"  RAM after DrugOOD load: {ram_gb():.1f} GB")
 
     drugood_df = load_and_evaluate(
-        MODEL_SAVE_PATH,
+        save_path,
         eval_datasets,
         context_sizes=[16, 32, 64, 128, 256, 512],
     )
+    drugood_path = os.path.join(RESULTS_DIR, f"drugood_results_{run_tag}.csv")
+    drugood_df.to_csv(drugood_path, index=False)
+    print(f"  Saved => {drugood_path}")
     print("\n=== DrugOOD results (long-form) ===")
     print(drugood_df.to_string())
     print("\n=== Summary: mean ΔAUPRC per split × query_set ===")
@@ -377,7 +482,7 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------
     # STEP 4: FS-Mol test evaluation
     #   4a — inside-task OOD at fixed n_support=16 (scaffold split)
-    #   4b — support-size sweep, 3 split types → 3 curves for Fig 2a
+    #   4b — support-size sweep, 3 split types => 3 curves for Fig 2a
     # ------------------------------------------------------------------
     print("\n[4/4] FS-Mol test evaluation...")
 
@@ -390,16 +495,16 @@ if __name__ == "__main__":
         model, test_assays, device,
         n_support=16, n_episodes_per_assay=10,
     )
-    inside_task_path = os.path.join(RESULTS_DIR, "inside_task_ood_results.csv")
+    inside_task_path = os.path.join(RESULTS_DIR, f"inside_task_ood_{run_tag}.csv")
     inside_task_df.to_csv(inside_task_path, index=False)
-    print(f"  Saved → {inside_task_path}")
+    print(f"  Saved => {inside_task_path}")
 
-    # 4b: Support-size sweep — 3 split types → 3 curves in Fig 2a
+    # 4b: Support-size sweep — 3 split types => 3 curves in Fig 2a
     print("\n  [4b] Support-size sweep (random / scaffold / size splits)...")
     fsmol_dfs = []
     for stype in ["random", "scaffold", "size"]:
         print(f"\n  -- split_type = {stype} --")
-        preds_path = os.path.join(RESULTS_DIR, f"fsmol_test_predictions_{stype}.csv")
+        preds_path = os.path.join(RESULTS_DIR, f"fsmol_test_predictions_{run_tag}_{stype}.csv")
         df = evaluate_fsmol_test(
             model, test_files, device,
             support_sizes=[16, 32, 64, 128, 256, 512],
@@ -410,9 +515,11 @@ if __name__ == "__main__":
         fsmol_dfs.append(df)
 
     fsmol_test_df = pd.concat(fsmol_dfs, ignore_index=True)
-    fsmol_test_path = os.path.join(RESULTS_DIR, "fsmol_test_results.csv")
+    fsmol_test_path = os.path.join(RESULTS_DIR, f"fsmol_test_results_{run_tag}.csv")
     fsmol_test_df.to_csv(fsmol_test_path, index=False)
-    print(f"\n  All 3 curves saved → {fsmol_test_path}")
+    print(f"\n  All 3 curves saved => {fsmol_test_path}")
 
     print("\n=== FS-Mol Test: mean ΔAUPRC per split_type × support_size ===")
     print(fsmol_test_df.groupby(["split_type", "support_size"])["delta_auprc"].mean().round(4))
+
+# scp "D:/Thesis/PTN/main.py" "D:/Thesis/PTN/config.py" "D:/Thesis/PTN/data.py" "D:/Thesis/PTN/evaluate.py" "D:/Thesis/PTN/model.py" "D:/Thesis/PTN/featurize.py" "D:/Thesis/PTN/train.py" chjo00006@conduit.hpc.uni-saarland.de:/home/chjo00006/PTN/

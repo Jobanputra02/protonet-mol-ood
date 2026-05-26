@@ -261,6 +261,31 @@ class EpisodeSampler:
         query_labels   = torch.tensor(dataset.labels[qry_idx])
         return support_fp, support_labels, query_fp, query_labels
 
+    # ------------------------------------------------------------------
+    # Index-only variants — used by FSMolGraphEpisodeDataset so graph
+    # construction can happen after index selection without duplicating
+    # the sampling logic.
+    # ------------------------------------------------------------------
+
+    def _get_episode_indices_shift_aware(self, dataset: "AssayDataset"):
+        min_group = max(2, self.n_support // 4)
+        usable_keys = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
+        if len(usable_keys) < 2:
+            return self._get_episode_indices_random(dataset)
+        chosen = np.random.choice(len(usable_keys), size=2, replace=False)
+        sup_pool = dataset.scaffold_groups[usable_keys[chosen[0]]]
+        qry_pool = dataset.scaffold_groups[usable_keys[chosen[1]]]
+        sup_idx = np.random.choice(sup_pool, size=self.n_support, replace=len(sup_pool) < self.n_support)
+        qry_idx = np.random.choice(qry_pool, size=self.n_query,   replace=len(qry_pool) < self.n_query)
+        return sup_idx, qry_idx
+
+    def _get_episode_indices_random(self, dataset: "AssayDataset"):
+        n_total = len(dataset)
+        all_idx = np.random.permutation(n_total)
+        n_sup = min(self.n_support, n_total // 2)
+        n_qry = min(self.n_query, n_total - n_sup)
+        return all_idx[:n_sup], all_idx[n_sup:n_sup + n_qry]
+
 
 # =============================================================================
 # ON-THE-FLY ASSAY FILE LOADER  (used by FSMolEpisodeDataset)
@@ -408,6 +433,130 @@ class FSMolEpisodeDataset(Dataset):
 # DRUGOOD EVALUATION DATASET
 # =============================================================================
 
+# =============================================================================
+# GNN GRAPH EPISODE DATASET
+# =============================================================================
+
+def _build_graphs_for_assay(dataset: "AssayDataset") -> list:
+    """
+    Build a PyG Data object for every molecule in `dataset` (uses SMILES from
+    dataset.scaffolds).  Returns a list aligned with dataset.fingerprints/labels.
+    Molecules whose SMILES yield an invalid graph get a minimal placeholder so
+    indices always match — the placeholder has zero edges and a single zero node.
+    """
+    from featurize import smiles_to_graph, NODE_FEAT_DIM
+    import torch
+    from torch_geometric.data import Data
+
+    _dummy = Data(
+        x=torch.zeros((1, NODE_FEAT_DIM), dtype=torch.float),
+        edge_index=torch.zeros((2, 0), dtype=torch.long),
+        edge_attr=torch.zeros((0, 12), dtype=torch.float),
+    )
+
+    graphs = []
+    for smi in dataset.scaffolds:
+        g = smiles_to_graph(smi)
+        graphs.append(g if g is not None else _dummy)
+    return graphs
+
+
+def graph_episode_collate(batch):
+    """
+    Collate function for FSMolGraphEpisodeDataset.
+
+    Input : list of (sup_graphs, sup_labels, qry_graphs, qry_labels)
+              where sup_graphs / qry_graphs are list[PyG Data]
+    Output: (PyG Batch(B*n_sup), Tensor(B,n_sup),
+             PyG Batch(B*n_qry), Tensor(B,n_qry))
+    """
+    from torch_geometric.data import Batch as PyGBatch
+
+    sup_graphs = [item[0] for item in batch]   # list of list[Data]
+    sup_labels = [item[1] for item in batch]   # list of Tensor[n_sup]
+    qry_graphs = [item[2] for item in batch]   # list of list[Data]
+    qry_labels = [item[3] for item in batch]   # list of Tensor[n_qry]
+
+    sup_batch  = PyGBatch.from_data_list([g for gs in sup_graphs for g in gs])
+    qry_batch  = PyGBatch.from_data_list([g for gs in qry_graphs for g in gs])
+    sup_labels_t = torch.stack(sup_labels)   # (B, n_sup)
+    qry_labels_t = torch.stack(qry_labels)   # (B, n_qry)
+
+    return sup_batch, sup_labels_t, qry_batch, qry_labels_t
+
+
+class FSMolGraphEpisodeDataset(Dataset):
+    """
+    Episodic dataset for GNN-based training — mirrors FSMolEpisodeDataset but
+    returns PyG graph objects instead of fingerprint tensors.
+
+    refresh_pool() loads a fresh set of assays, computes PyG graphs for every
+    molecule in each assay (stored in assay._graphs), then caches them in RAM.
+    __getitem__ samples an episode and returns lists of PyG Data objects.
+
+    Use with graph_episode_collate as the DataLoader's collate_fn.
+    """
+
+    def __init__(
+        self,
+        assay_files: list[str],
+        n_episodes_per_epoch: int = 1000,
+        n_support: int = 16,
+        n_query: int = 16,
+        shift_aware: bool = True,
+        pool_size: int = 750,
+    ):
+        if not assay_files:
+            raise ValueError("No assay files provided.")
+        self.all_files  = assay_files
+        self.n_episodes = n_episodes_per_epoch
+        self.n_support  = n_support
+        self.n_query    = n_query
+        self.sampler    = EpisodeSampler(n_support, n_query)
+        self.shift_aware = shift_aware
+        self.pool_size  = pool_size
+        self._pool: list = []
+        self.refresh_pool(verbose=True)
+
+    def refresh_pool(self, verbose: bool = False) -> None:
+        n     = min(self.pool_size, len(self.all_files))
+        files = np.random.choice(self.all_files, size=n, replace=False)
+        pool  = []
+        min_len = self.n_support + self.n_query
+        for path in files:
+            ds = _load_assay_file(path)
+            if len(ds) < min_len:
+                continue
+            ds._graphs = _build_graphs_for_assay(ds)
+            pool.append(ds)
+        if not pool:
+            raise ValueError("Graph pool is empty — no assay has enough valid molecules.")
+        self._pool = pool
+        if verbose:
+            print(f"  Graph pool loaded: {len(pool)} assays in RAM ({n} files sampled)")
+
+    def __len__(self) -> int:
+        return self.n_episodes
+
+    def __getitem__(self, idx):
+        ds = self._pool[np.random.randint(len(self._pool))]
+        return self._sample_graph_episode(ds)
+
+    def _sample_graph_episode(self, dataset: "AssayDataset"):
+        """Sample episode indices via EpisodeSampler and convert to graph lists."""
+        # Reuse index sampling logic from EpisodeSampler
+        if self.shift_aware and len(dataset.scaffold_groups) >= 2:
+            sup_idx, qry_idx = self.sampler._get_episode_indices_shift_aware(dataset)
+        else:
+            sup_idx, qry_idx = self.sampler._get_episode_indices_random(dataset)
+
+        sup_graphs = [dataset._graphs[i] for i in sup_idx]
+        qry_graphs = [dataset._graphs[i] for i in qry_idx]
+        sup_labels = torch.tensor(dataset.labels[sup_idx])
+        qry_labels = torch.tensor(dataset.labels[qry_idx])
+        return sup_graphs, sup_labels, qry_graphs, qry_labels
+
+
 class DrugOODEvalDataset:
     """
     Wraps DrugOOD splits for multi-scale zero-shot evaluation.
@@ -438,6 +587,11 @@ class DrugOODEvalDataset:
         ctx_ds     = AssayDataset(context_smiles, context_labels)
         ood_ds     = AssayDataset(ood_test_smiles, ood_test_labels)
         iid_ds     = AssayDataset(iid_test_smiles, iid_test_labels)
+
+        # Keep SMILES for GNN evaluation (fingerprints not used in that path)
+        self.context_smiles  = context_smiles
+        self.ood_test_smiles = ood_test_smiles
+        self.iid_test_smiles = iid_test_smiles
 
         # Full context pool — subsampled at episode time
         self.context_fp     = torch.tensor(np.stack(ctx_ds.fingerprints))

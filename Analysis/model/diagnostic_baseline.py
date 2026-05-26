@@ -43,9 +43,9 @@ from sklearn.kernel_ridge import KernelRidge
 _REPO_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 sys.path.insert(0, _REPO_ROOT)
 
-from config import FSMOL_TRAIN, FSMOL_TEST, MODEL_SAVE_PATH, RESULTS_DIR
+from config import FSMOL_TRAIN, FSMOL_TEST, PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT, RESULTS_DIR
 from data import _load_assay_file, EpisodeSampler
-from model import PrototypicalNetworkRegression
+from model import PrototypicalNetworkRegression, ECFPEncoder
 
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
@@ -74,12 +74,15 @@ def tanimoto_kernel(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
 
 
 def _load_model(device: torch.device) -> PrototypicalNetworkRegression:
-    print(f"Loading checkpoint: {MODEL_SAVE_PATH}")
-    ckpt  = torch.load(MODEL_SAVE_PATH, map_location=device)
-    cfg   = ckpt["config"]
-    model = PrototypicalNetworkRegression(
-        input_dim=2048, hidden_dim=cfg["hidden_dim"], embedding_dim=cfg["embedding_dim"]
-    ).to(device)
+    print(f"Loading checkpoint: {PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT}")
+    ckpt = torch.load(PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT, map_location=device)
+    cfg  = ckpt["config"]
+    encoder = ECFPEncoder(
+        input_dim=2048,
+        hidden_dim=cfg.get("hidden_dim", 512),
+        embedding_dim=cfg.get("embedding_dim", 256),
+    )
+    model = PrototypicalNetworkRegression(encoder).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
     print(f"  Epoch {ckpt['epoch']}, Val RMSE {ckpt['val_rmse']:.4f}\n")

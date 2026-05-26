@@ -1,57 +1,43 @@
 """
-Prototypical Network for Molecular Property Prediction (Regression)
-====================================================================
-Design choices made (with alternatives commented):
-- Encoder: ECFP fingerprints + MLP  (alternative: GNN like GIN/MPNN, or ChemBERTa)
-- Distance: Euclidean               (alternative: learned MLP metric)
-- Prediction: kernel regression     (alternative: binning/discretization into classes)
-- Temperature: learnable scalar     (alternative: fixed temperature = 1.0)
-- Loss: MSE                         (alternative: MAE, Huber loss)
+Prototypical Network for Molecular Property Prediction
+=======================================================
+Encoders (choose one, pass to the head at construction time):
+  ECFPEncoder     — ECFP4 2048-bit fingerprint + 3-layer MLP
+  PNAGNNEncoder   — Principal Neighbourhood Aggregation GNN (FS-Mol paper)
+
+Heads (encoder-agnostic, work with any encoder above):
+  PrototypicalNetworkRegression    — kernel regression, MSE loss     (Part 0)
+  PrototypicalNetworkClassification — true PN binary classification,
+                                      BCE loss                        (Part A)
+
+Distance function: squared Euclidean (≡ cosine on L2-normalised unit sphere).
+
+To add a new encoder: implement forward(x) → (n, emb_dim) and pass it to
+either head class. No changes to the head code are needed.
 """
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sklearn.metrics import average_precision_score
 
 
 # =============================================================================
-# MOLECULAR ENCODER
+# ENCODER A: ECFP + MLP
 # =============================================================================
 
-class MolecularEncoder(nn.Module):
+class ECFPEncoder(nn.Module):
     """
-    Maps a molecular fingerprint to an embedding vector.
+    Maps a 2048-bit ECFP4 fingerprint to a fixed-size embedding via 3-layer MLP.
+    Fast and simple; no graph dataloader required.
 
-    CHOSEN: ECFP fingerprint (2048-bit) -> MLP -> embedding
-    Reason: Simple, fast, no graph dataloader needed, works well in practice.
-
-    ALTERNATIVE (GNN-based encoder):
-    # from torch_geometric.nn import GINConv, global_mean_pool
-    # class GNNEncoder(nn.Module):
-    #     def __init__(self, embedding_dim):
-    #         super().__init__()
-    #         self.conv1 = GINConv(nn.Linear(atom_feat_dim, 64))
-    #         self.conv2 = GINConv(nn.Linear(64, embedding_dim))
-    #     def forward(self, data):
-    #         x = F.relu(self.conv1(data.x, data.edge_index))
-    #         x = self.conv2(x, data.edge_index)
-    #         return global_mean_pool(x, data.batch)
-
-    ALTERNATIVE (ChemBERTa-based encoder):
-    # from transformers import AutoModel, AutoTokenizer
-    # model = AutoModel.from_pretrained("seyonec/ChemBERTa-zinc-base-v1")
-    # Very expressive but slow and heavyweight for a 1-week project.
+    Input:  (n, 2048) float tensor
+    Output: (n, embedding_dim) L2-normalised float tensor
     """
 
     def __init__(self, input_dim: int = 2048, hidden_dim: int = 512, embedding_dim: int = 256):
-        """
-        Args:
-            input_dim:     Size of ECFP fingerprint. Default 2048 (ECFP4, nBits=2048).
-            hidden_dim:    Hidden layer size.
-            embedding_dim: Output embedding size. This is the latent space dimension.
-        """
         super().__init__()
-
         self.network = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
@@ -59,30 +45,116 @@ class MolecularEncoder(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(hidden_dim, embedding_dim)
+            nn.Linear(hidden_dim, embedding_dim),
         )
 
-        # L2 normalization at output: projects embeddings onto unit hypersphere.
-        # This makes Euclidean distance equivalent to cosine distance and
-        # stabilizes training. Standard practice in metric learning.
-        self.normalize = True
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.normalize(self.network(x), p=2, dim=-1)
+
+
+# =============================================================================
+# ENCODER B: PNA GNN  (FS-Mol paper, Schwartz et al. 2022)
+# =============================================================================
+
+class PNAGNNEncoder(nn.Module):
+    """
+    Principal Neighbourhood Aggregation GNN encoder.
+    Matches the architecture used in the FS-Mol prototypical network paper.
+
+    Architecture:
+      - Linear node embedding: node_feat_dim → hidden_channels
+      - 6 × PNAConv layers with BatchNorm + ReLU
+        aggregators : mean, min, max, std
+        scalers     : identity, amplification, attenuation
+      - Global mean pooling → (n_graphs, hidden_channels)
+      - 2-layer MLP projection → embedding_dim
+      - L2 normalisation
+
+    Input:  PyTorch Geometric Batch (x, edge_index, edge_attr, batch)
+    Output: (n_graphs, embedding_dim) L2-normalised float tensor
+
+    The `deg` tensor (degree histogram over the training set) is required for
+    the amplification/attenuation scalers. Compute it once via
+    featurize.compute_degree_histogram() and store it in the checkpoint.
+    """
+
+    def __init__(
+        self,
+        node_feat_dim: int,
+        edge_feat_dim: int,
+        hidden_channels: int = 128,
+        num_layers: int = 6,
+        embedding_dim: int = 256,
+        deg: torch.Tensor | None = None,
+    ):
+        super().__init__()
+        from torch_geometric.nn import PNAConv, BatchNorm, global_mean_pool  # type: ignore
+
+        self.global_mean_pool = global_mean_pool
+        self.deg = deg  # stored for checkpoint serialisation via _encoder_config
+
+        aggregators = ["mean", "min", "max", "std"]
+        scalers     = ["identity", "amplification", "attenuation"]
+
+        self.node_emb = nn.Linear(node_feat_dim, hidden_channels)
+
+        self.convs = nn.ModuleList()
+        self.batch_norms = nn.ModuleList()
+        for _ in range(num_layers):
+            self.convs.append(PNAConv(
+                in_channels=hidden_channels,
+                out_channels=hidden_channels,
+                aggregators=aggregators,
+                scalers=scalers,
+                deg=deg,
+                edge_dim=edge_feat_dim,
+                towers=4,
+                pre_layers=1,
+                post_layers=1,
+                divide_input=False,
+            ))
+            self.batch_norms.append(BatchNorm(hidden_channels))
+
+        self.output_proj = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.ReLU(),
+            nn.Linear(hidden_channels, embedding_dim),
+        )
+
+    def forward(self, batch) -> torch.Tensor:
         """
         Args:
-            x: Fingerprint tensor of shape (batch_size, input_dim)
+            batch: PyG Batch with fields x, edge_index, edge_attr, batch
         Returns:
-            embeddings: shape (batch_size, embedding_dim)
+            embeddings: (n_graphs, embedding_dim) L2-normalised
         """
-        embeddings = self.network(x)
-        if self.normalize:
-            embeddings = F.normalize(embeddings, p=2, dim=-1)
-        return embeddings
+        x = self.node_emb(batch.x)
+        for conv, bn in zip(self.convs, self.batch_norms):
+            x = conv(x, batch.edge_index, batch.edge_attr)
+            x = bn(x)
+            x = F.relu(x)
+        x = self.global_mean_pool(x, batch.batch)   # (n_graphs, hidden_channels)
+        x = self.output_proj(x)
+        return F.normalize(x, p=2, dim=-1)
 
 
 # =============================================================================
-# DISTANCE FUNCTION
+# SHARED UTILITIES
 # =============================================================================
+
+def _encode_many(encoder: nn.Module, inputs, B: int, n: int) -> torch.Tensor:
+    """
+    Encode B*n molecules and reshape to (B, n, emb_dim).
+    Works for both encoder types:
+      - ECFPEncoder:   inputs is Tensor(B, n, 2048)  → reshape → encode → reshape
+      - PNAGNNEncoder: inputs is PyG Batch(B*n graphs) → encode  → reshape
+    """
+    if isinstance(inputs, torch.Tensor):
+        D = inputs.shape[-1]
+        return encoder(inputs.reshape(B * n, D)).reshape(B, n, -1)
+    else:
+        return encoder(inputs).reshape(B, n, -1)
+
 
 def euclidean_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """
@@ -130,119 +202,50 @@ def euclidean_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
 
 class PrototypicalNetworkRegression(nn.Module):
     """
-    Prototypical Network adapted for regression via kernel regression.
+    Kernel regression in learned embedding space (Nadaraya-Watson).
+    Encoder-agnostic: pass an ECFPEncoder or PNAGNNEncoder at construction.
 
-    HOW IT WORKS:
-    1. Encode all support molecules into embedding space via f(x)
-    2. Encode query molecule into same space
-    3. Compute distances from query to each support embedding
-    4. Convert distances to weights via softmax (closer = higher weight)
-    5. Predict query label as weighted average of support labels
-
-    This is non-parametric kernel regression in learned embedding space.
-    The network only learns the embedding function f; prediction is pure math.
-
-    WHY NOT CLASSIFICATION:
-    DrugOOD targets are continuous (IC50, binding affinity).
-    Binning them into classes is possible but lossy and arbitrary.
-    Kernel regression is principled and preserves label information.
-
-    ALTERNATIVE (binning/classification approach):
-    # Discretize labels into N bins, treat as classification.
-    # Use standard cross-entropy loss and nearest-prototype classification.
-    # Simpler but loses precision and requires choosing bin boundaries.
-    # def predict_classification(self, support_embeddings, support_labels, query_embeddings, n_bins=10):
-    #     bins = torch.linspace(support_labels.min(), support_labels.max(), n_bins)
-    #     binned_labels = torch.bucketize(support_labels, bins)
-    #     prototypes = []
-    #     for b in range(n_bins):
-    #         mask = binned_labels == b
-    #         if mask.any():
-    #             prototypes.append(support_embeddings[mask].mean(0))
-    #     prototypes = torch.stack(prototypes)
-    #     dists = euclidean_distance(query_embeddings, prototypes)
-    #     return bins[dists.argmin(dim=1)]  # predicted bin center
+    pred(x_q) = Σ_i softmax(-d(f(x_q), f(x_i)) / τ) × y_i
+    Loss: MSE.  τ is a learnable scalar (starts at 1.0).
     """
 
-    def __init__(self, input_dim: int = 2048, hidden_dim: int = 512, embedding_dim: int = 256):
+    def __init__(self, encoder: nn.Module):
         super().__init__()
-        self.encoder = MolecularEncoder(input_dim, hidden_dim, embedding_dim)
+        self.encoder = encoder
+        self.log_tau = nn.Parameter(torch.zeros(1))  # tau = exp(log_tau)
 
-        # CHOSEN: Learnable temperature scalar.
-        # Controls sharpness of attention weights over support set.
-        # - High temperature (large tau): weights become uniform, prediction ~ mean of support labels
-        # - Low temperature (small tau): weights concentrate on nearest support point
-        # Initialized to 1.0, learned during training via backprop.
-        #
-        # ALTERNATIVE (fixed temperature):
-        # self.log_tau = None  # and remove from forward(); use raw distances
-        self.log_tau = nn.Parameter(torch.zeros(1))  # tau = exp(log_tau), starts at 1.0
-
-    def forward(
-        self,
-        support_fingerprints: torch.Tensor,
-        support_labels: torch.Tensor,
-        query_fingerprints: torch.Tensor
-    ) -> torch.Tensor:
+    def forward(self, support_input, support_labels: torch.Tensor, query_input) -> torch.Tensor:
         """
-        Core forward pass: given support set, predict query labels.
-
         Args:
-            support_fingerprints: (n_support, input_dim)  — context molecules
-            support_labels:       (n_support,)             — their known activity values
-            query_fingerprints:   (n_query, input_dim)    — molecules to predict
-
+            support_input:  Tensor(n_sup, D) for ECFP  OR  PyG Batch(n_sup graphs) for GNN
+            support_labels: Tensor(n_sup,)
+            query_input:    Tensor(n_qry, D) for ECFP  OR  PyG Batch(n_qry graphs) for GNN
         Returns:
-            query_predictions:    (n_query,)               — predicted activity values
+            predictions: Tensor(n_qry,)
         """
-        # Step 1: Encode support and query molecules
-        support_emb = self.encoder(support_fingerprints)  # (n_support, emb_dim)
-        query_emb = self.encoder(query_fingerprints)      # (n_query, emb_dim)
-
-        # Step 2: Compute pairwise distances: query vs support
-        distances = euclidean_distance(query_emb, support_emb)  # (n_query, n_support)
-
-        # Step 3: Convert distances to weights via softmax with temperature
-        # tau = exp(log_tau) ensures tau > 0 always
+        sup_emb = self.encoder(support_input)   # (n_sup, emb_dim)
+        qry_emb = self.encoder(query_input)     # (n_qry, emb_dim)
+        distances = euclidean_distance(qry_emb, sup_emb)   # (n_qry, n_sup)
         tau = torch.exp(self.log_tau)
-        # Negative distance: closer support points get higher weight
-        weights = F.softmax(-distances / tau, dim=1)  # (n_query, n_support)
+        weights = F.softmax(-distances / tau, dim=1)       # (n_qry, n_sup)
+        return torch.mv(weights, support_labels)            # (n_qry,)
 
-        # ALTERNATIVE (fixed temperature = 1.0, no learnable parameter):
-        # weights = F.softmax(-distances, dim=1)
-
-        # Step 4: Weighted average of support labels
-        # weights: (n_query, n_support), support_labels: (n_support,)
-        predictions = torch.mv(weights, support_labels)  # (n_query,)
-
-        return predictions
-
-    def forward_batched(
-        self,
-        support_fingerprints: torch.Tensor,
-        support_labels: torch.Tensor,
-        query_fingerprints: torch.Tensor,
-    ) -> torch.Tensor:
+    def forward_batched(self, support_input, support_labels: torch.Tensor, query_input) -> torch.Tensor:
         """
-        Batched forward pass: processes all episodes in a batch in one GPU call.
-
         Args:
-            support_fingerprints: (B, n_support, input_dim)
-            support_labels:       (B, n_support)
-            query_fingerprints:   (B, n_query, input_dim)
-
+            support_input:  Tensor(B, n_sup, D)  OR  PyG Batch(B*n_sup graphs)
+            support_labels: Tensor(B, n_sup)
+            query_input:    Tensor(B, n_qry, D)  OR  PyG Batch(B*n_qry graphs)
         Returns:
-            predictions: (B, n_query)
+            predictions: Tensor(B, n_qry)
         """
-        B, n_sup, D = support_fingerprints.shape
-        n_qry = query_fingerprints.shape[1]
+        B, n_sup = support_labels.shape
+        n_qry = query_input.shape[1] if isinstance(query_input, torch.Tensor) \
+                else query_input.num_graphs // B
 
-        # Encode all B*n_sup support and B*n_qry query molecules in one encoder call
-        sup_emb = self.encoder(support_fingerprints.reshape(B * n_sup, D)).reshape(B, n_sup, -1)
-        qry_emb = self.encoder(query_fingerprints.reshape(B * n_qry, D)).reshape(B, n_qry, -1)
+        sup_emb = _encode_many(self.encoder, support_input, B, n_sup)   # (B, n_sup, emb_dim)
+        qry_emb = _encode_many(self.encoder, query_input,   B, n_qry)   # (B, n_qry, emb_dim)
 
-        # Batched pairwise squared Euclidean distances: (B, n_qry, n_sup)
-        # ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a·b  — avoids materializing (B,n_qry,n_sup,D)
         sup_sq = (sup_emb ** 2).sum(dim=-1, keepdim=True)           # (B, n_sup, 1)
         qry_sq = (qry_emb ** 2).sum(dim=-1, keepdim=True)           # (B, n_qry, 1)
         dot    = torch.bmm(qry_emb, sup_emb.transpose(1, 2))        # (B, n_qry, n_sup)
@@ -250,61 +253,173 @@ class PrototypicalNetworkRegression(nn.Module):
 
         tau     = torch.exp(self.log_tau)
         weights = F.softmax(-distances / tau, dim=-1)                # (B, n_qry, n_sup)
+        return torch.bmm(weights, support_labels.unsqueeze(-1)).squeeze(-1)
 
-        # Weighted average: bmm of (B, n_qry, n_sup) × (B, n_sup, 1) → (B, n_qry)
-        predictions = torch.bmm(weights, support_labels.unsqueeze(-1)).squeeze(-1)
-        return predictions
-
-    def compute_loss_batched(
-        self,
-        support_fingerprints: torch.Tensor,
-        support_labels: torch.Tensor,
-        query_fingerprints: torch.Tensor,
-        query_labels: torch.Tensor,
-    ) -> tuple[torch.Tensor, dict]:
-        """
-        Batched episode loss — replaces the Python for-loop in train_epoch.
-
-        Args:
-            support_fingerprints: (B, n_support, input_dim)
-            support_labels:       (B, n_support)
-            query_fingerprints:   (B, n_query, input_dim)
-            query_labels:         (B, n_query)
-
-        Returns:
-            loss: scalar MSE averaged over all B*n_query predictions
-            metrics: dict with rmse, mae
-        """
-        predictions = self.forward_batched(support_fingerprints, support_labels, query_fingerprints)
+    def compute_loss_batched(self, support_input, support_labels, query_input, query_labels):
+        predictions = self.forward_batched(support_input, support_labels, query_input)
         loss = F.mse_loss(predictions, query_labels)
         with torch.no_grad():
             rmse = torch.sqrt(loss).item()
             mae  = F.l1_loss(predictions, query_labels).item()
         return loss, {"rmse": rmse, "mae": mae}
 
-    def compute_loss(
-        self,
-        support_fingerprints: torch.Tensor,
-        support_labels: torch.Tensor,
-        query_fingerprints: torch.Tensor,
-        query_labels: torch.Tensor
-    ) -> tuple[torch.Tensor, dict]:
-        """
-        Full episode forward pass + loss computation.
-
-        Returns:
-            loss: scalar tensor (MSE)
-            metrics: dict with rmse, mae for logging
-        """
-        predictions = self.forward(support_fingerprints, support_labels, query_fingerprints)
-
-        # CHOSEN: MSE loss — standard for regression, smooth gradients.
-        # ALTERNATIVE (MAE): loss = F.l1_loss(predictions, query_labels)
-        # ALTERNATIVE (Huber): loss = F.huber_loss(predictions, query_labels, delta=1.0)
+    def compute_loss(self, support_input, support_labels, query_input, query_labels):
+        predictions = self.forward(support_input, support_labels, query_input)
         loss = F.mse_loss(predictions, query_labels)
-
         with torch.no_grad():
             rmse = torch.sqrt(loss).item()
             mae = F.l1_loss(predictions, query_labels).item()
 
         return loss, {"rmse": rmse, "mae": mae}
+
+
+# =============================================================================
+# PROTOTYPICAL NETWORK (BINARY CLASSIFICATION)  — Part A
+# =============================================================================
+
+class PrototypicalNetworkClassification(nn.Module):
+    """
+    True Prototypical Network for active/inactive binary classification.
+    Matches the FS-Mol paper (Schwartz et al., 2022) evaluation protocol.
+
+    Per episode:
+      1. Binarise support labels: active = label > median(support_labels)
+      2. proto_active   = mean(encoder(x_i) for active support molecules)
+         proto_inactive = mean(encoder(x_i) for inactive support molecules)
+      3. logits_q = [-d(f(x_q), proto_active), -d(f(x_q), proto_inactive)]
+      4. P(active | x_q) = softmax(logits_q)[0]
+      5. Loss: BCE(P(active), binary_query_labels)
+
+    Median threshold is computed from support only and applied to both support
+    and query — same as FS-Mol paper. Guarantees balanced support split.
+
+    Primary metric: ΔAUPRC (same as regression model evaluation).
+    """
+
+    def __init__(self, encoder: nn.Module):
+        super().__init__()
+        self.encoder = encoder
+
+    def forward(self, support_input, support_labels: torch.Tensor, query_input) -> torch.Tensor:
+        """
+        Args:
+            support_input:  Tensor(n_sup, D) or PyG Batch(n_sup graphs)
+            support_labels: Tensor(n_sup,) — continuous, binarised internally via support median
+            query_input:    Tensor(n_qry, D) or PyG Batch(n_qry graphs)
+        Returns:
+            p_active: Tensor(n_qry,) — P(active) for each query molecule
+        """
+        sup_emb = self.encoder(support_input)
+        qry_emb = self.encoder(query_input)
+
+        threshold   = support_labels.median()
+        active_mask = support_labels > threshold
+
+        if not active_mask.any() or not (~active_mask).any():
+            return torch.full((qry_emb.shape[0],), 0.5, device=qry_emb.device)
+
+        proto_active   = sup_emb[active_mask].mean(dim=0)
+        proto_inactive = sup_emb[~active_mask].mean(dim=0)
+        protos   = torch.stack([proto_active, proto_inactive], dim=0)
+        dists    = euclidean_distance(qry_emb, protos)   # (n_qry, 2)
+        p_active = F.softmax(-dists, dim=1)[:, 0]
+        return p_active
+
+    def forward_batched(
+        self, support_input, support_labels: torch.Tensor, query_input,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Args:
+            support_input:  Tensor(B, n_sup, D) or PyG Batch(B*n_sup graphs)
+            support_labels: Tensor(B, n_sup)
+            query_input:    Tensor(B, n_qry, D) or PyG Batch(B*n_qry graphs)
+        Returns:
+            p_active:   Tensor(B, n_qry)
+            valid_mask: BoolTensor(B,) — False for degenerate (all-one-class) episodes
+        """
+        B, n_sup = support_labels.shape
+        n_qry = query_input.shape[1] if isinstance(query_input, torch.Tensor) \
+                else query_input.num_graphs // B
+
+        sup_emb = _encode_many(self.encoder, support_input, B, n_sup)
+        qry_emb = _encode_many(self.encoder, query_input,   B, n_qry)
+
+        # Binarise per episode using support median
+        thresholds  = support_labels.median(dim=1).values  # (B,)
+        active_mask = support_labels > thresholds.unsqueeze(1)  # (B, n_support) bool
+
+        act_count   = active_mask.float().sum(dim=1)    # (B,)
+        inact_count = (~active_mask).float().sum(dim=1) # (B,)
+        valid_mask  = (act_count > 0) & (inact_count > 0)  # (B,)
+
+        # Compute class prototypes (clamped counts to avoid 0-division; invalid episodes
+        # produce a meaningless prototype that we mask out in the loss)
+        act_w   = active_mask.float() / act_count.clamp(min=1).unsqueeze(1)   # (B, n_sup)
+        inact_w = (~active_mask).float() / inact_count.clamp(min=1).unsqueeze(1)
+
+        proto_active   = torch.bmm(act_w.unsqueeze(1), sup_emb).squeeze(1)    # (B, emb_dim)
+        proto_inactive = torch.bmm(inact_w.unsqueeze(1), sup_emb).squeeze(1)  # (B, emb_dim)
+
+        # Distances from each query to each prototype
+        protos   = torch.stack([proto_active, proto_inactive], dim=1)          # (B, 2, emb_dim)
+        qry_sq   = (qry_emb ** 2).sum(dim=-1, keepdim=True)                   # (B, n_qry, 1)
+        proto_sq = (protos ** 2).sum(dim=-1, keepdim=True)                    # (B, 2, 1)
+        dot      = torch.bmm(qry_emb, protos.transpose(1, 2))                 # (B, n_qry, 2)
+        dists    = (qry_sq + proto_sq.transpose(1, 2) - 2 * dot).clamp(min=0) # (B, n_qry, 2)
+
+        p_active = F.softmax(-dists, dim=-1)[:, :, 0]  # (B, n_qry)
+        return p_active, valid_mask
+
+    # ------------------------------------------------------------------
+    # Loss (used by training loop)
+    # ------------------------------------------------------------------
+
+    def compute_loss_batched(
+        self,
+        support_input,
+        support_labels: torch.Tensor,
+        query_input,
+        query_labels: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict]:
+        """
+        Args:
+            support_fingerprints: (B, n_support, input_dim)
+            support_labels:       (B, n_support)  — continuous
+            query_fingerprints:   (B, n_query, input_dim)
+            query_labels:         (B, n_query)    — continuous; binarised here
+
+        Returns:
+            loss:    scalar BCE over valid episodes
+            metrics: {"delta_auprc": float}
+        """
+        p_active, valid_mask = self.forward_batched(
+            support_input, support_labels, query_input
+        )
+
+        # Binarise query using same support-median threshold
+        thresholds   = support_labels.median(dim=1).values  # (B,)
+        binary_query = (query_labels > thresholds.unsqueeze(1)).float()  # (B, n_query)
+
+        if not valid_mask.any():
+            return torch.tensor(0.0, device=p_active.device, requires_grad=True), {"delta_auprc": float("nan")}
+
+        # BCE only over valid (non-degenerate) episodes
+        p_valid = p_active[valid_mask]       # (V, n_query)
+        b_valid = binary_query[valid_mask]   # (V, n_query)
+        loss = F.binary_cross_entropy(p_valid, b_valid)
+
+        with torch.no_grad():
+            p_np = p_valid.detach().cpu().numpy()
+            b_np = b_valid.detach().cpu().numpy().astype(int)
+            dauprc_vals = []
+            for i in range(p_np.shape[0]):
+                s = b_np[i].sum()
+                if 0 < s < len(b_np[i]):
+                    try:
+                        d = float(average_precision_score(b_np[i], p_np[i])) - float(b_np[i].mean())
+                        dauprc_vals.append(d)
+                    except Exception:
+                        pass
+            avg_dauprc = float(np.mean(dauprc_vals)) if dauprc_vals else float("nan")
+
+        return loss, {"delta_auprc": avg_dauprc}

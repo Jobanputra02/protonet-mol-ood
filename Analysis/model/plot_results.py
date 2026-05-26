@@ -9,17 +9,21 @@ Reads CSV files produced by the evaluation pipeline and generates:
   Figure 3:    DrugOOD — Spearman and ΔAUPRC vs context size, faceted by shift type
 
 Input CSVs (from outputs/results/ via config.py):
-    fsmol_test_results.csv    — produced by evaluate_fsmol_test in main.py
-    drugood_results.csv       — produced by evaluate_drugood_multiscale in main.py
+    fsmol_test_results_{run_tag}.csv  — produced by main.py
+    drugood_results_{run_tag}.csv     — produced by main.py
 
 Usage:
-    python analysis/model/plot_results.py
+    python analysis/model/plot_results.py --run_tag ecfp_regression_shift_aware
+    python analysis/model/plot_results.py --encoder gnn --head classification --split shift_aware
 """
 
+import argparse
 import os
 import sys
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")   # headless — no display required (works on HPC/server)
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -27,8 +31,26 @@ from config import FIGURES_DIR, RESULTS_DIR
 
 os.makedirs(FIGURES_DIR, exist_ok=True)
 
-FSMOL_CSV   = os.path.join(RESULTS_DIR, "fsmol_test_results.csv")
-DRUGOOD_CSV = os.path.join(RESULTS_DIR, "drugood_results.csv")
+# ---------------------------------------------------------------------------
+# Parse run tag from CLI
+# ---------------------------------------------------------------------------
+_parser = argparse.ArgumentParser(description="Plot FS-Mol and DrugOOD results")
+_parser.add_argument("--run_tag", type=str, default=None,
+                     help="Full run tag, e.g. ecfp_regression_shift_aware")
+_parser.add_argument("--encoder", type=str, default="ecfp", choices=["ecfp", "gnn"])
+_parser.add_argument("--head",    type=str, default="regression",
+                     choices=["regression", "classification"])
+_parser.add_argument("--split",   type=str, default="shift_aware",
+                     choices=["shift_aware", "random"])
+_args = _parser.parse_args()
+
+RUN_TAG = _args.run_tag or f"{_args.encoder}_{_args.head}_{_args.split}"
+# Human-readable label for figure titles, e.g. "ECFP | regression | shift_aware"
+_parts  = RUN_TAG.split("_", 2)
+RUN_LABEL = f"{_parts[0].upper()} | {'_'.join(_parts[1:])}" if len(_parts) >= 2 else RUN_TAG
+
+FSMOL_CSV   = os.path.join(RESULTS_DIR, f"fsmol_test_results_{RUN_TAG}.csv")
+DRUGOOD_CSV = os.path.join(RESULTS_DIR, f"drugood_results_{RUN_TAG}.csv")
 
 
 # =============================================================================
@@ -38,19 +60,26 @@ DRUGOOD_CSV = os.path.join(RESULTS_DIR, "drugood_results.csv")
 def plot_fsmol_line(df: pd.DataFrame) -> None:
     """
     Three split types (random / scaffold / size) as separate lines.
-    Three panels: ΔAUPRC, Spearman ρ, RMSE vs support size.
+    Panels: ΔAUPRC, Spearman ρ, RMSE vs support size.
+    Panels with all-NaN values (e.g. classification has no Spearman/RMSE) are skipped.
     Error bars = ±1 std across assays (shows task variability, not repeat noise).
     """
     split_colors = {"random": "steelblue", "scaffold": "tomato", "size": "seagreen"}
     split_types  = sorted(df["split_type"].unique())
 
-    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
-
-    for ax, (metric, ylabel) in zip(axes, [
+    all_metrics = [
         ("delta_auprc", "Mean ΔAUPRC"),
         ("spearman",    "Mean Spearman ρ"),
         ("rmse",        "Mean RMSE"),
-    ]):
+    ]
+    metrics = [(m, y) for m, y in all_metrics if df[m].notna().any()]
+
+    n = len(metrics)
+    fig, axes = plt.subplots(1, n, figsize=(5.5 * n, 5))
+    if n == 1:
+        axes = [axes]
+
+    for ax, (metric, ylabel) in zip(axes, metrics):
         for stype in split_types:
             sub = df[df.split_type == stype]
             grouped = sub.groupby("support_size").agg(
@@ -75,10 +104,11 @@ def plot_fsmol_line(df: pd.DataFrame) -> None:
         if ax is axes[0]:
             ax.legend(fontsize=9)
 
-    plt.suptitle("FS-Mol Test Evaluation — Prototypical Network (ECFP4, shift-aware)",
+
+    plt.suptitle(f"FS-Mol Test Evaluation — Prototypical Network ({RUN_LABEL})",
                  fontsize=13, y=1.02)
     plt.tight_layout()
-    out = os.path.join(FIGURES_DIR, "fig2a_fsmol_line_plot.png")
+    out = os.path.join(FIGURES_DIR, f"fig2a_fsmol_line_plot_{RUN_TAG}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved → {out}")
@@ -94,18 +124,24 @@ def plot_fsmol_line(df: pd.DataFrame) -> None:
 def plot_fsmol_boxplot(df: pd.DataFrame) -> None:
     """
     Boxplot showing distribution of per-assay ΔAUPRC and Spearman ρ across support sizes.
-    One panel per metric; boxes coloured by split type.
+    One panel per metric; panels with all-NaN values (e.g. classification) are skipped.
     """
     split_types   = sorted(df["split_type"].unique())
     support_sizes = sorted(df["support_size"].unique())
+    split_colors  = {"random": "steelblue", "scaffold": "tomato", "size": "seagreen"}
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    split_colors = {"random": "steelblue", "scaffold": "tomato", "size": "seagreen"}
-
-    for ax, (metric, ylabel) in zip(axes, [
+    all_metrics = [
         ("delta_auprc", "ΔAUPRC per assay"),
         ("spearman",    "Spearman ρ per assay"),
-    ]):
+    ]
+    metrics = [(m, y) for m, y in all_metrics if df[m].notna().any()]
+
+    n = len(metrics)
+    fig, axes = plt.subplots(1, n, figsize=(7 * n, 5))
+    if n == 1:
+        axes = [axes]
+
+    for ax, (metric, ylabel) in zip(axes, metrics):
         positions = []
         all_data  = []
         all_colors = []
@@ -150,9 +186,9 @@ def plot_fsmol_boxplot(df: pd.DataFrame) -> None:
         handles.append(plt.Line2D([0], [0], color="red", linestyle="--", label="Random baseline"))
         ax.legend(handles=handles, fontsize=8)
 
-    plt.suptitle("FS-Mol Test: Per-Assay Distribution", fontsize=13, y=1.02)
+    plt.suptitle(f"FS-Mol Test: Per-Assay Distribution ({RUN_LABEL})", fontsize=13, y=1.02)
     plt.tight_layout()
-    out = os.path.join(FIGURES_DIR, "fig2b_fsmol_boxplot.png")
+    out = os.path.join(FIGURES_DIR, f"fig2b_fsmol_boxplot_{RUN_TAG}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved → {out}")
@@ -164,24 +200,29 @@ def plot_fsmol_boxplot(df: pd.DataFrame) -> None:
 
 def plot_drugood_line(df: pd.DataFrame) -> None:
     """
-    For each DrugOOD shift type: Spearman and ΔAUPRC vs context size.
+    For each DrugOOD shift type: ΔAUPRC (and Spearman if available) vs context size.
     ood_test and iid_test as separate lines with error bars.
+    Rows with all-NaN values (e.g. Spearman for classification) are skipped.
     """
     split_types = sorted(df["split_type"].unique())
     n_splits    = len(split_types)
     colors      = {"ood_test": "tomato", "iid_test": "steelblue"}
     markers     = {"ood_test": "o", "iid_test": "s"}
 
-    fig, axes = plt.subplots(2, n_splits, figsize=(6 * n_splits, 10), squeeze=False)
+    all_row_metrics = [
+        ("spearman",    "spearman_std",    "Spearman ρ"),
+        ("delta_auprc", "delta_auprc_std", "ΔAUPRC"),
+    ]
+    row_metrics = [(m, s, y) for m, s, y in all_row_metrics if df[m].notna().any()]
+    n_rows = len(row_metrics)
+
+    fig, axes = plt.subplots(n_rows, n_splits, figsize=(6 * n_splits, 5 * n_rows), squeeze=False)
 
     for col_i, split_type in enumerate(split_types):
         sub        = df[df.split_type == split_type]
         short_name = split_type.replace("lbap_core_ic50_", "IC50 ")
 
-        for row_i, (metric, std_col, ylabel) in enumerate([
-            ("spearman",    "spearman_std",    "Spearman ρ"),
-            ("delta_auprc", "delta_auprc_std", "ΔAUPRC"),
-        ]):
+        for row_i, (metric, std_col, ylabel) in enumerate(row_metrics):
             ax = axes[row_i, col_i]
             for qset in ("ood_test", "iid_test"):
                 qsub = sub[sub.query_set == qset].sort_values("context_set_size")
@@ -201,10 +242,10 @@ def plot_drugood_line(df: pd.DataFrame) -> None:
             if col_i == 0:
                 ax.legend(fontsize=8)
 
-    plt.suptitle("DrugOOD Evaluation — Prototypical Network (ECFP4, shift-aware)",
-                 fontsize=13, y=1.01)
+    plt.suptitle(f"DrugOOD Evaluation — Prototypical Network ({RUN_LABEL})",
+                 fontsize=13, y=1.02 if n_rows == 1 else 1.01)
     plt.tight_layout()
-    out = os.path.join(FIGURES_DIR, "fig3_drugood_line_plot.png")
+    out = os.path.join(FIGURES_DIR, f"fig3_drugood_line_plot_{RUN_TAG}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved → {out}")
@@ -217,7 +258,7 @@ def plot_drugood_line(df: pd.DataFrame) -> None:
 if __name__ == "__main__":
     if not os.path.exists(FSMOL_CSV):
         print(f"FS-Mol CSV not found: {FSMOL_CSV}")
-        print("Run main.py first to generate fsmol_test_results.csv")
+        print(f"Run main.py with matching config first, or pass --run_tag {RUN_TAG}")
     else:
         print(f"Loading FS-Mol results: {FSMOL_CSV}")
         fsmol_df = pd.read_csv(FSMOL_CSV)
