@@ -1,0 +1,265 @@
+============================================================
+Prototypical Network: Molecular OOD
+  encoder=gnn  head=classification  split=shift_aware
+  run_tag => gnn_classification_shift_aware
+  checkpoint => /home/chjo00006/PTN/checkpoints/ptn_gnn_classification_shift_aware.pt
+============================================================
+
+[1/4] Indexing FS-Mol files...
+  Train: 26868  Val: 40  Test: 157
+  RAM: 0.6 GB
+
+[2/4] Pretraining on FS-Mol...
+  Computing degree histogram for PNA scalers...
+  Degree histogram computed over 91062 molecules (500 assays).
+Training on: cuda
+  Graph pool loaded: 478 assays in RAM (750 files sampled)
+  Graph pool loaded: 38 assays in RAM (40 files sampled)
+Epoch   1/100 | Train BCE: 0.6908 | Train ΔAUPRC: +0.1379 | Val ΔAUPRC: +0.1018 | LR: 1.00e-04
+  → Saved new best model (Val ΔAUPRC: +0.1018)
+Epoch   2/100 | Train BCE: 0.6884 | Train ΔAUPRC: +0.1441 | Val ΔAUPRC: +0.0868 | LR: 1.00e-04
+Epoch   3/100 | Train BCE: 0.6882 | Train ΔAUPRC: +0.1464 | Val ΔAUPRC: +0.0886 | LR: 1.00e-04
+Epoch   4/100 | Train BCE: 0.6887 | Train ΔAUPRC: +0.1347 | Val ΔAUPRC: +0.1072 | LR: 1.00e-04
+  → Saved new best model (Val ΔAUPRC: +0.1072)
+Epoch   5/100 | Train BCE: 0.6909 | Train ΔAUPRC: +0.1343 | Val ΔAUPRC: +0.0992 | LR: 1.00e-04
+Epoch   6/100 | Train BCE: 0.6878 | Train ΔAUPRC: +0.1371 | Val ΔAUPRC: +0.0892 | LR: 1.00e-04
+Epoch   7/100 | Train BCE: 0.6904 | Train ΔAUPRC: +0.1230 | Val ΔAUPRC: +0.0972 | LR: 1.00e-04
+Epoch   8/100 | Train BCE: 0.6911 | Train ΔAUPRC: +0.1311 | Val ΔAUPRC: +0.0839 | LR: 1.00e-04
+Epoch   9/100 | Train BCE: 0.6883 | Train ΔAUPRC: +0.1426 | Val ΔAUPRC: +0.0900 | LR: 1.00e-04
+Epoch  10/100 | Train BCE: 0.6884 | Train ΔAUPRC: +0.1459 | Val ΔAUPRC: +0.1143 | LR: 1.00e-04
+  → Saved new best model (Val ΔAUPRC: +0.1143)
+Epoch  11/100 | Train BCE: 0.6902 | Train ΔAUPRC: +0.1359 | Val ΔAUPRC: +0.0900 | LR: 1.00e-04
+Epoch  12/100 | Train BCE: 0.6884 | Train ΔAUPRC: +0.1395 | Val ΔAUPRC: +0.1087 | LR: 1.00e-04
+Epoch  13/100 | Train BCE: 0.6887 | Train ΔAUPRC: +0.1456 | Val ΔAUPRC: +0.0979 | LR: 1.00e-04
+Epoch  14/100 | Train BCE: 0.6905 | Train ΔAUPRC: +0.1246 | Val ΔAUPRC: +0.1057 | LR: 1.00e-04
+Epoch  15/100 | Train BCE: 0.6906 | Train ΔAUPRC: +0.1309 | Val ΔAUPRC: +0.1049 | LR: 1.00e-04
+Epoch  16/100 | Train BCE: 0.6876 | Train ΔAUPRC: +0.1393 | Val ΔAUPRC: +0.0995 | LR: 1.00e-04
+Epoch  17/100 | Train BCE: 0.6855 | Train ΔAUPRC: +0.1471 | Val ΔAUPRC: +0.0901 | LR: 1.00e-04
+Epoch  18/100 | Train BCE: 0.6892 | Train ΔAUPRC: +0.1228 | Val ΔAUPRC: +0.1046 | LR: 1.00e-04
+Epoch  19/100 | Train BCE: 0.6887 | Train ΔAUPRC: +0.1369 | Val ΔAUPRC: +0.1033 | LR: 1.00e-04
+Epoch  20/100 | Train BCE: 0.6898 | Train ΔAUPRC: +0.1309 | Val ΔAUPRC: +0.1006 | LR: 1.00e-04
+Epoch  21/100 | Train BCE: 0.6914 | Train ΔAUPRC: +0.1259 | Val ΔAUPRC: +0.0987 | LR: 1.00e-04
+Epoch  22/100 | Train BCE: 0.6906 | Train ΔAUPRC: +0.1398 | Val ΔAUPRC: +0.1236 | LR: 1.00e-04
+  → Saved new best model (Val ΔAUPRC: +0.1236)
+Epoch  23/100 | Train BCE: 0.6905 | Train ΔAUPRC: +0.1135 | Val ΔAUPRC: +0.1072 | LR: 1.00e-04
+Epoch  24/100 | Train BCE: 0.6895 | Train ΔAUPRC: +0.1331 | Val ΔAUPRC: +0.1190 | LR: 1.00e-04
+Epoch  25/100 | Train BCE: 0.6890 | Train ΔAUPRC: +0.1314 | Val ΔAUPRC: +0.1095 | LR: 1.00e-04
+Epoch  26/100 | Train BCE: 0.6898 | Train ΔAUPRC: +0.1319 | Val ΔAUPRC: +0.1225 | LR: 1.00e-04
+Epoch  27/100 | Train BCE: 0.6912 | Train ΔAUPRC: +0.1386 | Val ΔAUPRC: +0.1200 | LR: 1.00e-04
+Epoch  28/100 | Train BCE: 0.6867 | Train ΔAUPRC: +0.1481 | Val ΔAUPRC: +0.0964 | LR: 1.00e-04
+Epoch  29/100 | Train BCE: 0.6909 | Train ΔAUPRC: +0.1262 | Val ΔAUPRC: +0.0935 | LR: 1.00e-04
+Epoch  30/100 | Train BCE: 0.6872 | Train ΔAUPRC: +0.1361 | Val ΔAUPRC: +0.1029 | LR: 1.00e-04
+Epoch  31/100 | Train BCE: 0.6897 | Train ΔAUPRC: +0.1193 | Val ΔAUPRC: +0.1008 | LR: 1.00e-04
+Epoch  32/100 | Train BCE: 0.6915 | Train ΔAUPRC: +0.1397 | Val ΔAUPRC: +0.0898 | LR: 1.00e-04
+Epoch  33/100 | Train BCE: 0.6924 | Train ΔAUPRC: +0.1293 | Val ΔAUPRC: +0.1042 | LR: 1.00e-04
+Epoch  34/100 | Train BCE: 0.6872 | Train ΔAUPRC: +0.1440 | Val ΔAUPRC: +0.0933 | LR: 1.00e-04
+Epoch  35/100 | Train BCE: 0.6919 | Train ΔAUPRC: +0.1396 | Val ΔAUPRC: +0.1062 | LR: 1.00e-04
+Epoch  36/100 | Train BCE: 0.6883 | Train ΔAUPRC: +0.1433 | Val ΔAUPRC: +0.1192 | LR: 1.00e-04
+Epoch  37/100 | Train BCE: 0.6924 | Train ΔAUPRC: +0.1245 | Val ΔAUPRC: +0.1187 | LR: 1.00e-04
+Epoch  38/100 | Train BCE: 0.6903 | Train ΔAUPRC: +0.1357 | Val ΔAUPRC: +0.1014 | LR: 1.00e-04
+Epoch  39/100 | Train BCE: 0.6920 | Train ΔAUPRC: +0.1325 | Val ΔAUPRC: +0.1062 | LR: 1.00e-04
+Epoch  40/100 | Train BCE: 0.6907 | Train ΔAUPRC: +0.1408 | Val ΔAUPRC: +0.1110 | LR: 1.00e-04
+Epoch  41/100 | Train BCE: 0.6911 | Train ΔAUPRC: +0.1334 | Val ΔAUPRC: +0.1056 | LR: 1.00e-04
+Epoch  42/100 | Train BCE: 0.6910 | Train ΔAUPRC: +0.1352 | Val ΔAUPRC: +0.1167 | LR: 1.00e-04
+Epoch  43/100 | Train BCE: 0.6908 | Train ΔAUPRC: +0.1415 | Val ΔAUPRC: +0.1223 | LR: 5.00e-05
+Epoch  44/100 | Train BCE: 0.6914 | Train ΔAUPRC: +0.1318 | Val ΔAUPRC: +0.1117 | LR: 5.00e-05
+Epoch  45/100 | Train BCE: 0.6888 | Train ΔAUPRC: +0.1457 | Val ΔAUPRC: +0.1213 | LR: 5.00e-05
+Epoch  46/100 | Train BCE: 0.6889 | Train ΔAUPRC: +0.1360 | Val ΔAUPRC: +0.1225 | LR: 5.00e-05
+Epoch  47/100 | Train BCE: 0.6921 | Train ΔAUPRC: +0.1365 | Val ΔAUPRC: +0.1146 | LR: 5.00e-05
+
+Early stopping at epoch 47 (no improvement for 25 epochs).
+
+Pretraining complete. Best Val ΔAUPRC: +0.1236
+  RAM after pretrain: 7.8 GB
+
+[3/4] Evaluating on DrugOOD...
+  lbap_core_ic50_scaffold: train pool=22025, ood_test=19480, iid_test=31388
+  lbap_core_ic50_size: train pool=37497, ood_test=16761, iid_test=12721
+  lbap_core_ic50_assay: train pool=34953, ood_test=19463, iid_test=11960
+  RAM after DrugOOD load: 9.5 GB
+Loaded gnn/classification model from epoch 22 (Val ΔAUPRC=+0.1236)
+lbap_core_ic50_scaffold             | ctx=  16 | ood_test | ΔAUPRC: +0.0061±0.0209 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx=  16 | iid_test | ΔAUPRC: +0.0309±0.0080 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx=  32 | ood_test | ΔAUPRC: +0.0270±0.0166 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx=  32 | iid_test | ΔAUPRC: +0.0425±0.0030 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx=  64 | ood_test | ΔAUPRC: +0.0221±0.0222 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx=  64 | iid_test | ΔAUPRC: +0.0275±0.0226 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx= 128 | ood_test | ΔAUPRC: +0.0290±0.0103 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx= 128 | iid_test | ΔAUPRC: +0.0364±0.0097 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx= 256 | ood_test | ΔAUPRC: +0.0387±0.0011 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx= 256 | iid_test | ΔAUPRC: +0.0448±0.0013 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx= 512 | ood_test | ΔAUPRC: +0.0390±0.0038 | RMSE: nan | Spearman: nan
+lbap_core_ic50_scaffold             | ctx= 512 | iid_test | ΔAUPRC: +0.0442±0.0031 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx=  16 | ood_test | ΔAUPRC: +0.0422±0.0058 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx=  16 | iid_test | ΔAUPRC: +0.0233±0.0031 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx=  32 | ood_test | ΔAUPRC: +0.0459±0.0063 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx=  32 | iid_test | ΔAUPRC: +0.0263±0.0059 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx=  64 | ood_test | ΔAUPRC: +0.0466±0.0055 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx=  64 | iid_test | ΔAUPRC: +0.0277±0.0032 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx= 128 | ood_test | ΔAUPRC: +0.0464±0.0051 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx= 128 | iid_test | ΔAUPRC: +0.0284±0.0025 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx= 256 | ood_test | ΔAUPRC: +0.0468±0.0016 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx= 256 | iid_test | ΔAUPRC: +0.0288±0.0003 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx= 512 | ood_test | ΔAUPRC: +0.0488±0.0021 | RMSE: nan | Spearman: nan
+lbap_core_ic50_size                 | ctx= 512 | iid_test | ΔAUPRC: +0.0296±0.0012 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx=  16 | ood_test | ΔAUPRC: +0.0189±0.0431 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx=  16 | iid_test | ΔAUPRC: +0.0155±0.0559 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx=  32 | ood_test | ΔAUPRC: +0.0174±0.0455 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx=  32 | iid_test | ΔAUPRC: +0.0164±0.0544 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx=  64 | ood_test | ΔAUPRC: +0.0413±0.0146 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx=  64 | iid_test | ΔAUPRC: +0.0470±0.0136 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx= 128 | ood_test | ΔAUPRC: +0.0482±0.0032 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx= 128 | iid_test | ΔAUPRC: +0.0540±0.0031 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx= 256 | ood_test | ΔAUPRC: +0.0497±0.0021 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx= 256 | iid_test | ΔAUPRC: +0.0547±0.0016 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx= 512 | ood_test | ΔAUPRC: +0.0481±0.0025 | RMSE: nan | Spearman: nan
+lbap_core_ic50_assay                | ctx= 512 | iid_test | ΔAUPRC: +0.0536±0.0019 | RMSE: nan | Spearman: nan
+  Saved => /home/chjo00006/PTN/outputs/results/drugood_results_gnn_classification_shift_aware.csv
+
+=== DrugOOD results (long-form) ===
+                    split_type query_set  context_set_size  actual_context_n  n_test  n_seeds  delta_auprc  delta_auprc_std  rmse  rmse_std  mae  spearman  spearman_std
+index                                                                                                                                                                   
+0      lbap_core_ic50_scaffold  ood_test                16                16   19480        3     0.006106         0.020928   NaN       NaN  NaN       NaN           NaN
+1      lbap_core_ic50_scaffold  iid_test                16                16   31388        3     0.030904         0.008003   NaN       NaN  NaN       NaN           NaN
+2      lbap_core_ic50_scaffold  ood_test                32                32   19480        3     0.027029         0.016635   NaN       NaN  NaN       NaN           NaN
+3      lbap_core_ic50_scaffold  iid_test                32                32   31388        3     0.042504         0.003003   NaN       NaN  NaN       NaN           NaN
+4      lbap_core_ic50_scaffold  ood_test                64                64   19480        3     0.022108         0.022219   NaN       NaN  NaN       NaN           NaN
+5      lbap_core_ic50_scaffold  iid_test                64                64   31388        3     0.027492         0.022571   NaN       NaN  NaN       NaN           NaN
+6      lbap_core_ic50_scaffold  ood_test               128               128   19480        3     0.029036         0.010292   NaN       NaN  NaN       NaN           NaN
+7      lbap_core_ic50_scaffold  iid_test               128               128   31388        3     0.036409         0.009707   NaN       NaN  NaN       NaN           NaN
+8      lbap_core_ic50_scaffold  ood_test               256               256   19480        3     0.038701         0.001076   NaN       NaN  NaN       NaN           NaN
+9      lbap_core_ic50_scaffold  iid_test               256               256   31388        3     0.044818         0.001310   NaN       NaN  NaN       NaN           NaN
+10     lbap_core_ic50_scaffold  ood_test               512               512   19480        3     0.038981         0.003753   NaN       NaN  NaN       NaN           NaN
+11     lbap_core_ic50_scaffold  iid_test               512               512   31388        3     0.044217         0.003096   NaN       NaN  NaN       NaN           NaN
+12         lbap_core_ic50_size  ood_test                16                16   16761        3     0.042244         0.005835   NaN       NaN  NaN       NaN           NaN
+13         lbap_core_ic50_size  iid_test                16                16   12721        3     0.023346         0.003091   NaN       NaN  NaN       NaN           NaN
+14         lbap_core_ic50_size  ood_test                32                32   16761        3     0.045918         0.006289   NaN       NaN  NaN       NaN           NaN
+15         lbap_core_ic50_size  iid_test                32                32   12721        3     0.026268         0.005937   NaN       NaN  NaN       NaN           NaN
+16         lbap_core_ic50_size  ood_test                64                64   16761        3     0.046620         0.005550   NaN       NaN  NaN       NaN           NaN
+17         lbap_core_ic50_size  iid_test                64                64   12721        3     0.027719         0.003189   NaN       NaN  NaN       NaN           NaN
+18         lbap_core_ic50_size  ood_test               128               128   16761        3     0.046368         0.005071   NaN       NaN  NaN       NaN           NaN
+19         lbap_core_ic50_size  iid_test               128               128   12721        3     0.028425         0.002477   NaN       NaN  NaN       NaN           NaN
+20         lbap_core_ic50_size  ood_test               256               256   16761        3     0.046847         0.001586   NaN       NaN  NaN       NaN           NaN
+21         lbap_core_ic50_size  iid_test               256               256   12721        3     0.028779         0.000268   NaN       NaN  NaN       NaN           NaN
+22         lbap_core_ic50_size  ood_test               512               512   16761        3     0.048801         0.002107   NaN       NaN  NaN       NaN           NaN
+23         lbap_core_ic50_size  iid_test               512               512   12721        3     0.029601         0.001227   NaN       NaN  NaN       NaN           NaN
+24        lbap_core_ic50_assay  ood_test                16                16   19463        3     0.018912         0.043146   NaN       NaN  NaN       NaN           NaN
+25        lbap_core_ic50_assay  iid_test                16                16   11960        3     0.015470         0.055900   NaN       NaN  NaN       NaN           NaN
+26        lbap_core_ic50_assay  ood_test                32                32   19463        3     0.017395         0.045470   NaN       NaN  NaN       NaN           NaN
+27        lbap_core_ic50_assay  iid_test                32                32   11960        3     0.016429         0.054384   NaN       NaN  NaN       NaN           NaN
+28        lbap_core_ic50_assay  ood_test                64                64   19463        3     0.041264         0.014590   NaN       NaN  NaN       NaN           NaN
+29        lbap_core_ic50_assay  iid_test                64                64   11960        3     0.047047         0.013629   NaN       NaN  NaN       NaN           NaN
+30        lbap_core_ic50_assay  ood_test               128               128   19463        3     0.048172         0.003229   NaN       NaN  NaN       NaN           NaN
+31        lbap_core_ic50_assay  iid_test               128               128   11960        3     0.053970         0.003091   NaN       NaN  NaN       NaN           NaN
+32        lbap_core_ic50_assay  ood_test               256               256   19463        3     0.049726         0.002116   NaN       NaN  NaN       NaN           NaN
+33        lbap_core_ic50_assay  iid_test               256               256   11960        3     0.054746         0.001646   NaN       NaN  NaN       NaN           NaN
+34        lbap_core_ic50_assay  ood_test               512               512   19463        3     0.048129         0.002479   NaN       NaN  NaN       NaN           NaN
+35        lbap_core_ic50_assay  iid_test               512               512   11960        3     0.053622         0.001878   NaN       NaN  NaN       NaN           NaN
+
+=== Summary: mean ΔAUPRC per split × query_set ===
+split_type               query_set
+lbap_core_ic50_assay     iid_test     0.0402
+                         ood_test     0.0373
+lbap_core_ic50_scaffold  iid_test     0.0377
+                         ood_test     0.0270
+lbap_core_ic50_size      iid_test     0.0274
+                         ood_test     0.0461
+Name: delta_auprc, dtype: float64
+
+[4/4] FS-Mol test evaluation...
+
+  [4a] Inside-task OOD (scaffold split, n_support=16)...
+  Loading assay 1/157...
+============================================================
+  Data-loss report: test/
+============================================================
+  Molecules in raw files        :     56,220
+  -- Dropped (inexact Relation) :     12,429  (22.1%)
+  -- Dropped (bad/missing fields):       129  (0.2%)
+  -- Dropped (task too small)   :          0  (0.0%)
+  ----------------------------------------
+  Total molecules lost          :     12,558  (22.3%)
+  Molecules used for training   :     43,662  (77.7%)
+  ---
+  Tasks in directory            :        157
+  Tasks dropped (<32 molecules)  :          3  (1.9%)
+  Tasks kept                    :        154  (98.1%)
+============================================================
+  Test assays loaded: 154
+
+Inside-task OOD: 153 assays evaluated, 1 skipped (no scaffold group with ≥3 molecules).
+  Mean Spearman : nan  (0/153 assays non-nan)
+  Mean RMSE     : nan
+  Mean ΔAUPRC   : 0.0240
+  Saved => /home/chjo00006/PTN/outputs/results/inside_task_ood_gnn_classification_shift_aware.csv
+
+  [4b] Support-size sweep (random / scaffold / size splits)...
+
+  -- split_type = random --
+  [random] 20/157 assays...  [random] 40/157 assays...  [random] 60/157 assays...  [random] 80/157 assays...  [random] 100/157 assays...  [random] 120/157 assays...  [random] 140/157 assays...
+  Done [random]. 154 assays × 6 support sizes.
+
+=== FS-Mol Test [random]: mean metrics per support size ===
+              delta_auprc  spearman  rmse
+support_size                             
+16                 0.0277       NaN   NaN
+32                 0.0350       NaN   NaN
+64                 0.0413       NaN   NaN
+128                0.0607       NaN   NaN
+256                0.0714       NaN   NaN
+512                0.0580       NaN   NaN
+  Predictions saved → /home/chjo00006/PTN/outputs/results/fsmol_test_predictions_gnn_classification_shift_aware_random.csv  (825,490 rows)
+
+  -- split_type = scaffold --
+  [scaffold] 20/157 assays...  [scaffold] 40/157 assays...  [scaffold] 60/157 assays...  [scaffold] 80/157 assays...  [scaffold] 100/157 assays...  [scaffold] 120/157 assays...  [scaffold] 140/157 assays...
+  Done [scaffold]. 144 assays × 6 support sizes.
+
+=== FS-Mol Test [scaffold]: mean metrics per support size ===
+              delta_auprc  spearman  rmse
+support_size                             
+16                 0.0152       NaN   NaN
+32                 0.0142       NaN   NaN
+64                 0.0138       NaN   NaN
+128                0.0168       NaN   NaN
+256                0.0012       NaN   NaN
+512                0.0144       NaN   NaN
+  Predictions saved → /home/chjo00006/PTN/outputs/results/fsmol_test_predictions_gnn_classification_shift_aware_scaffold.csv  (1,022,570 rows)
+
+  -- split_type = size --
+  [size] 20/157 assays...  [size] 40/157 assays...  [size] 60/157 assays...  [size] 80/157 assays...  [size] 100/157 assays...  [size] 120/157 assays...  [size] 140/157 assays...
+  Done [size]. 154 assays × 6 support sizes.
+
+=== FS-Mol Test [size]: mean metrics per support size ===
+              delta_auprc  spearman  rmse
+support_size                             
+16                 0.0353       NaN   NaN
+32                 0.0379       NaN   NaN
+64                 0.0471       NaN   NaN
+128                0.0445       NaN   NaN
+256                0.0349       NaN   NaN
+512                0.0432       NaN   NaN
+  Predictions saved → /home/chjo00006/PTN/outputs/results/fsmol_test_predictions_gnn_classification_shift_aware_size.csv  (536,650 rows)
+
+  All 3 curves saved => /home/chjo00006/PTN/outputs/results/fsmol_test_results_gnn_classification_shift_aware.csv
+
+=== FS-Mol Test: mean ΔAUPRC per split_type × support_size ===
+split_type  support_size
+random      16              0.0277
+            32              0.0350
+            64              0.0413
+            128             0.0607
+            256             0.0714
+            512             0.0580
+scaffold    16              0.0152
+            32              0.0142
+            64              0.0138
+            128             0.0168
+            256             0.0012
+            512             0.0144
+size        16              0.0353
+            32              0.0379
+            64              0.0471
+            128             0.0445
+            256             0.0349
+            512             0.0432
+Name: delta_auprc, dtype: float64

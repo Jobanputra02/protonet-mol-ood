@@ -8,7 +8,7 @@ import os
 
 # ── Environment ────────────────────────────────────────────────────────────────
 # Change this one line to switch environments
-ENV = "local"   # "local" | "server"
+ENV = "server"   # "local" | "server"
 
 if ENV == "local":
     FSMOL_DIR   = "D:/Thesis/PTN/data/fsmol"
@@ -36,6 +36,12 @@ PTN_GNN_REGRESSION_SHIFT_CHECKPOINT       = os.path.join(CHECKPOINT_DIR, "ptn_gn
 PTN_GNN_REGRESSION_RANDOM_CHECKPOINT      = os.path.join(CHECKPOINT_DIR, "ptn_gnn_regression_random.pt")
 PTN_GNN_CLASSIFICATION_SHIFT_CHECKPOINT   = os.path.join(CHECKPOINT_DIR, "ptn_gnn_classification_shift_aware.pt")
 PTN_GNN_CLASSIFICATION_RANDOM_CHECKPOINT  = os.path.join(CHECKPOINT_DIR, "ptn_gnn_classification_random.pt")
+
+# FS-Mol faithful encoder (8-layer GNN + ECFP + descriptors feature fusion)
+PTN_FSMOL_GNN_REGRESSION_SHIFT_CHECKPOINT      = os.path.join(CHECKPOINT_DIR, "ptn_fsmol_gnn_regression_shift_aware.pt")
+PTN_FSMOL_GNN_REGRESSION_RANDOM_CHECKPOINT     = os.path.join(CHECKPOINT_DIR, "ptn_fsmol_gnn_regression_random.pt")
+PTN_FSMOL_GNN_CLASSIFICATION_SHIFT_CHECKPOINT  = os.path.join(CHECKPOINT_DIR, "ptn_fsmol_gnn_classification_shift_aware.pt")
+PTN_FSMOL_GNN_CLASSIFICATION_RANDOM_CHECKPOINT = os.path.join(CHECKPOINT_DIR, "ptn_fsmol_gnn_classification_random.pt")
 
 OUTPUT_DIR  = os.path.join(REPO_ROOT, "outputs")
 FIGURES_DIR = os.path.join(OUTPUT_DIR, "figures")

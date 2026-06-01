@@ -23,9 +23,13 @@ from config import (FSMOL_TRAIN, FSMOL_VAL, FSMOL_TEST,
                     PTN_GNN_REGRESSION_SHIFT_CHECKPOINT,
                     PTN_GNN_REGRESSION_RANDOM_CHECKPOINT,
                     PTN_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
-                    PTN_GNN_CLASSIFICATION_RANDOM_CHECKPOINT)
+                    PTN_GNN_CLASSIFICATION_RANDOM_CHECKPOINT,
+                    PTN_FSMOL_GNN_REGRESSION_SHIFT_CHECKPOINT,
+                    PTN_FSMOL_GNN_REGRESSION_RANDOM_CHECKPOINT,
+                    PTN_FSMOL_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
+                    PTN_FSMOL_GNN_CLASSIFICATION_RANDOM_CHECKPOINT)
 from data import AssayDataset, DrugOODEvalDataset, get_scaffold
-from model import ECFPEncoder, PNAGNNEncoder
+from model import ECFPEncoder, PNAGNNEncoder, FSMolGNNEncoder
 from featurize import NODE_FEAT_DIM, EDGE_FEAT_DIM, compute_degree_histogram
 from train import pretrain_regression, pretrain_classification
 from evaluate import load_and_evaluate, evaluate_inside_task_ood, evaluate_fsmol_test
@@ -312,14 +316,17 @@ if __name__ == "__main__":
     #                                    true PN binary active/inactive, BCE loss (Part A)
     #
     # ENCODER:        "ecfp"           => ECFPEncoder (2048-bit Morgan fingerprints)
-    #                 "gnn"            => PNAGNNEncoder (6-layer PNA GNN, FS-Mol featurisation)
+    #                 "gnn"            => PNAGNNEncoder (6-layer PNA, original featurisation)
+    #                 "fsmol_gnn"      => FSMolGNNEncoder (8-layer PNA, FS-Mol faithful:
+    #                                    Pre-Norm LN + ReZero + BOOM FFN + feature fusion
+    #                                    GNN-128 ++ ECFP-2048 ++ descriptors-42 → 512-dim)
     #
     # TRAINING_SPLIT: "shift_aware"   => support from one scaffold group, query
     #                                    from different groups (OOD-aware episodes)
     #                 "random"        => support and query drawn randomly (IID episodes)
     # ==========================================================================
     MODEL_HEAD     = "classification"  # "regression" | "classification"
-    ENCODER        = "gnn"            # "ecfp" | "gnn"
+    ENCODER        = "fsmol_gnn"      # "ecfp" | "gnn" | "fsmol_gnn"
     TRAINING_SPLIT = "shift_aware"    # "shift_aware" | "random"
     SEED           = 42               # fixed for reproducibility — change to run a different seed
     SKIP_TRAINING  = False             # True = load existing checkpoint, skip steps 1-2 pretraining
@@ -327,14 +334,18 @@ if __name__ == "__main__":
     # Checkpoint paths are defined in config.py (one per model combination).
     # Add a new entry there when introducing a new encoder, head, or split.
     CHECKPOINT_MAP = {
-        ("ecfp", "regression", "shift_aware"): PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT,
-        ("ecfp", "regression", "random"): PTN_ECFP_REGRESSION_RANDOM_CHECKPOINT,
-        ("ecfp", "classification", "shift_aware"): PTN_ECFP_CLASSIFICATION_SHIFT_CHECKPOINT,
-        ("ecfp", "classification", "random"): PTN_ECFP_CLASSIFICATION_RANDOM_CHECKPOINT,
-        ("gnn", "regression", "shift_aware"): PTN_GNN_REGRESSION_SHIFT_CHECKPOINT,
-        ("gnn", "regression", "random"): PTN_GNN_REGRESSION_RANDOM_CHECKPOINT,
-        ("gnn", "classification", "shift_aware"): PTN_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
-        ("gnn", "classification", "random"): PTN_GNN_CLASSIFICATION_RANDOM_CHECKPOINT,
+        ("ecfp",      "regression",     "shift_aware"): PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT,
+        ("ecfp",      "regression",     "random"):      PTN_ECFP_REGRESSION_RANDOM_CHECKPOINT,
+        ("ecfp",      "classification", "shift_aware"): PTN_ECFP_CLASSIFICATION_SHIFT_CHECKPOINT,
+        ("ecfp",      "classification", "random"):      PTN_ECFP_CLASSIFICATION_RANDOM_CHECKPOINT,
+        ("gnn",       "regression",     "shift_aware"): PTN_GNN_REGRESSION_SHIFT_CHECKPOINT,
+        ("gnn",       "regression",     "random"):      PTN_GNN_REGRESSION_RANDOM_CHECKPOINT,
+        ("gnn",       "classification", "shift_aware"): PTN_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
+        ("gnn",       "classification", "random"):      PTN_GNN_CLASSIFICATION_RANDOM_CHECKPOINT,
+        ("fsmol_gnn", "regression",     "shift_aware"): PTN_FSMOL_GNN_REGRESSION_SHIFT_CHECKPOINT,
+        ("fsmol_gnn", "regression",     "random"):      PTN_FSMOL_GNN_REGRESSION_RANDOM_CHECKPOINT,
+        ("fsmol_gnn", "classification", "shift_aware"): PTN_FSMOL_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
+        ("fsmol_gnn", "classification", "random"):      PTN_FSMOL_GNN_CLASSIFICATION_RANDOM_CHECKPOINT,
     }
     save_path = CHECKPOINT_MAP[(ENCODER, MODEL_HEAD, TRAINING_SPLIT)]
 
@@ -398,7 +409,19 @@ if __name__ == "__main__":
     else:
         print("\n[2/4] Pretraining on FS-Mol...")
 
-        if ENCODER == "gnn":
+        if ENCODER == "fsmol_gnn":
+            from featurize import FSMOL_NODE_FEAT_DIM, compute_fsmol_degree_histogram
+            print("  Computing FS-Mol degree histogram for PNA scalers...")
+            deg = compute_fsmol_degree_histogram(train_files, n_sample=500)
+            encoder = FSMolGNNEncoder(
+                node_feat_dim=FSMOL_NODE_FEAT_DIM,
+                hidden_channels=128,
+                num_layers=10,
+                embedding_dim=512,
+                deg=deg,
+                dropout=0.0,
+            )
+        elif ENCODER == "gnn":
             print("  Computing degree histogram for PNA scalers...")
             deg = compute_degree_histogram(train_files, n_sample=500)
             encoder = PNAGNNEncoder(
@@ -412,19 +435,19 @@ if __name__ == "__main__":
         else:  # ecfp
             encoder = ECFPEncoder(input_dim=2048, hidden_dim=512, embedding_dim=256)
 
-        # GNN needs a lower LR — 1e-3 causes gradient instability through 6 PNA layers
-        # and BCE gets stuck at ln(2)=0.6931 (random-classifier output) the entire run.
-        lr = 1e-4 if ENCODER == "gnn" else 1e-3
+        # LR: 1e-4 for GNN (FS-Mol paper default), 1e-3 for ECFP
+        lr = 1e-4 if ENCODER in ("gnn", "fsmol_gnn") else 1e-3
 
         model = pretrain_fn(
             encoder,
-            train_assays=train_files,
-            val_assays=val_files,
+            train_assays=train_files,    # all ~26k training files — no pool filter
+            val_assays=val_files,        # all ~40 val files
             n_epochs=100,
-            n_support=32,       # was 16 — larger episodes use A100 more efficiently
-            n_query=64,         # was 16 — matches FS-Mol training regime (n_support=64, n_query=256)
-            n_episodes_train=500,  # was 1000 — episode is 4× larger so same total molecules/epoch
-            n_episodes_val=200,
+            tasks_per_batch=16,          # FS-Mol paper: 16 tasks accumulated per optimizer step
+            n_support=64,                # FS-Mol paper training episode size
+            n_query=256,                 # FS-Mol paper training episode size
+            n_episodes_train=1000,       # episodes per epoch (~62 optimizer steps/epoch)
+            n_episodes_val=200,          # ~5 per val assay × 40 val assays
             lr=lr,
             save_path=save_path,
             shift_aware=shift_aware,
@@ -438,12 +461,8 @@ if __name__ == "__main__":
     # Compile model for A100 Tensor Core acceleration.
     # dynamic=True handles variable graph sizes (different atom counts per molecule).
     # Falls back to eager silently on older PyTorch or unsupported platforms.
-    if torch.cuda.is_available():
-        try:
-            model = torch.compile(model, dynamic=True)
-            print("  torch.compile enabled (dynamic=True)")
-        except Exception as e:
-            print(f"  torch.compile unavailable ({e}) — running eager mode")
+    # torch.compile disabled: inductor requires getpass.getuser() which fails on HPC
+    # clusters where the UID is not in /etc/passwd. Eager mode on A100 + AMP is fast enough.
 
     # ------------------------------------------------------------------
     # STEP 3: DrugOOD evaluation — zero-shot OOD with context from train
@@ -506,7 +525,7 @@ if __name__ == "__main__":
         print(f"\n  -- split_type = {stype} --")
         preds_path = os.path.join(RESULTS_DIR, f"fsmol_test_predictions_{run_tag}_{stype}.csv")
         df = evaluate_fsmol_test(
-            model, test_files, device,
+            model, test_assays, device,
             support_sizes=[16, 32, 64, 128, 256, 512],
             n_repeats=5,
             split_type=stype,

@@ -111,9 +111,9 @@ def plot_fsmol_line(df: pd.DataFrame) -> None:
     out = os.path.join(FIGURES_DIR, f"fig2a_fsmol_line_plot_{RUN_TAG}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"Saved → {out}")
+    print(f"Saved -> {out}")
 
-    print("\nMean ΔAUPRC by split_type × support_size:")
+    print("\nMean dAUPRC by split_type x support_size:")
     print(df.groupby(["split_type", "support_size"])["delta_auprc"].mean().round(4))
 
 
@@ -191,7 +191,7 @@ def plot_fsmol_boxplot(df: pd.DataFrame) -> None:
     out = os.path.join(FIGURES_DIR, f"fig2b_fsmol_boxplot_{RUN_TAG}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"Saved → {out}")
+    print(f"Saved -> {out}")
 
 
 # =============================================================================
@@ -248,7 +248,7 @@ def plot_drugood_line(df: pd.DataFrame) -> None:
     out = os.path.join(FIGURES_DIR, f"fig3_drugood_line_plot_{RUN_TAG}.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"Saved → {out}")
+    print(f"Saved -> {out}")
 
 
 # =============================================================================

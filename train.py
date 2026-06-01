@@ -1,8 +1,15 @@
 """
 Training Loop: FS-Mol Pretraining
 ==================================
-Episodic training on FS-Mol assays.
-Each step: sample episode → forward pass → MSE loss → backprop → update encoder.
+Epoch-based training with gradient accumulation matching the FS-Mol paper protocol:
+  - n_epochs outer loop; validates and saves at end of each epoch
+  - tasks_per_batch: how many episodes are accumulated per optimizer step (default 16)
+  - Streams from ALL training files — no pool size limit
+  - Constant LR (FS-Mol paper default; no scheduler)
+
+GNN:  batch_size=1  → accumulate tasks_per_batch items per optimizer step
+ECFP: batch_size=tasks_per_batch → single forward pass per optimizer step
+Both produce the same effective gradient: mean over tasks_per_batch episodes.
 """
 
 import random
@@ -11,7 +18,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import numpy as np
 from model import (PrototypicalNetworkRegression, PrototypicalNetworkClassification,
-                   PNAGNNEncoder)
+                   PNAGNNEncoder, FSMolGNNEncoder)
 from data import FSMolEpisodeDataset, FSMolGraphEpisodeDataset, graph_episode_collate
 
 
@@ -24,69 +31,18 @@ def set_seed(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
-def train_epoch_regression(model, loader, optimizer, device):
-    model.train()
-    total_loss = 0.0
-    total_rmse = 0.0
-    n_batches  = 0
-    use_amp    = device.type == "cuda"
-
-    for batch in loader:
-        support_fp, support_labels, query_fp, query_labels = batch
-        # Move entire batch to GPU in 4 transfers instead of 4*batch_size
-        s_fp  = support_fp.to(device)    # (B, n_support, 2048)
-        s_lbl = support_labels.to(device)
-        q_fp  = query_fp.to(device)
-        q_lbl = query_labels.to(device)
-
-        optimizer.zero_grad()
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-            loss, metrics = model.compute_loss_batched(s_fp, s_lbl, q_fp, q_lbl)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-
-        total_loss += loss.item()
-        total_rmse += metrics["rmse"]
-        n_batches  += 1
-
-    return {
-        "loss": total_loss / n_batches,
-        "rmse": total_rmse / n_batches,
-    }
-
-
-def validate_regression(model, loader, device):
-    model.eval()
-    total_rmse = 0.0
-    total_mae  = 0.0
-    n_batches  = 0
-    use_amp    = device.type == "cuda"
-
-    with torch.no_grad():
-        for batch in loader:
-            support_fp, support_labels, query_fp, query_labels = batch
-            s_fp  = support_fp.to(device)
-            s_lbl = support_labels.to(device)
-            q_fp  = query_fp.to(device)
-            q_lbl = query_labels.to(device)
-
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-                _, metrics = model.compute_loss_batched(s_fp, s_lbl, q_fp, q_lbl)
-            total_rmse += metrics["rmse"]
-            total_mae  += metrics["mae"]
-            n_batches  += 1
-
-    return {
-        "rmse": total_rmse / n_batches,
-        "mae":  total_mae  / n_batches,
-    }
-
-
-
 def _encoder_config(encoder) -> dict:
     """Serialisable config dict for a given encoder — stored inside each checkpoint."""
-    if isinstance(encoder, PNAGNNEncoder):
+    if isinstance(encoder, FSMolGNNEncoder):
+        deg = encoder.deg
+        return {
+            "encoder_type":    "fsmol_gnn",
+            "hidden_channels": encoder.node_emb.out_features,
+            "num_layers":      len(encoder.gnn_layers),
+            "embedding_dim":   encoder.fc[-1].out_features,
+            "deg":             deg.tolist() if deg is not None else None,
+        }
+    elif isinstance(encoder, PNAGNNEncoder):
         deg = encoder.deg
         return {
             "encoder_type":    "gnn",
@@ -110,281 +66,316 @@ def _worker_init_fn(worker_id: int) -> None:
     random.seed(seed)
 
 
-def _make_loaders(encoder, train_assays, val_assays,
-                  n_episodes_train, n_episodes_val, n_support, n_query, shift_aware):
-    """Return (train_loader, val_loader) using the right dataset class for the encoder."""
-    is_gnn = isinstance(encoder, PNAGNNEncoder)
-    DatasetCls = FSMolGraphEpisodeDataset if is_gnn else FSMolEpisodeDataset
-    collate_fn = graph_episode_collate if is_gnn else None
+def _make_loaders(encoder, train_files, val_files,
+                  n_episodes_train, n_episodes_val,
+                  n_support, n_query, shift_aware):
+    """Return (train_loader, val_loader)."""
+    is_fsmol_gnn = isinstance(encoder, FSMolGNNEncoder)
+    is_gnn       = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
+    DatasetCls   = FSMolGraphEpisodeDataset if is_gnn else FSMolEpisodeDataset
+    collate_fn   = graph_episode_collate if is_gnn else None
+    gnn_kwargs   = {"fsmol_style": is_fsmol_gnn} if is_gnn else {}
 
-    # ECFP fingerprints are compact (2048 float32 per molecule) so a larger pool
-    # fits easily in RAM and gives more diversity per epoch.
-    # GNN graphs are heavier (variable-size node/edge tensors), so keep pool smaller.
-    train_pool_size = 750 if is_gnn else 2000
-    # Val has only 40 assays total — load all of them regardless of encoder.
-    val_pool_size   = len(val_assays)
+    # GNN: batch_size=1 → accumulate tasks_per_batch items per step (memory safety)
+    # ECFP: batch_size=tasks_per_batch → single fast forward pass per step
+    train_batch_size = 1 if is_gnn else 16
 
     train_dataset = DatasetCls(
-        train_assays, n_episodes_train, n_support, n_query,
-        shift_aware=shift_aware, pool_size=train_pool_size,
+        train_files, n_episodes_train, n_support, n_query,
+        shift_aware=shift_aware, **gnn_kwargs,
     )
     val_dataset = DatasetCls(
-        val_assays, n_episodes_val, n_support, n_query,
-        shift_aware=False, pool_size=val_pool_size,
+        val_files, n_episodes_val, n_support, n_query,
+        shift_aware=False, **gnn_kwargs,
     )
-    # num_workers=2: while GPU processes batch N, workers prepare batch N+1.
-    # Workers are re-forked each epoch (persistent_workers=False default), so
-    # they see the refreshed pool after each refresh_pool() call.
-    # Val loader stays single-process — it's only 1 batch total, no benefit.
-    train_loader = DataLoader(train_dataset, batch_size=32,  shuffle=False,
-                              num_workers=2, pin_memory=not is_gnn,
-                              collate_fn=collate_fn, worker_init_fn=_worker_init_fn)
-    val_loader   = DataLoader(val_dataset,   batch_size=200, shuffle=False,
-                              num_workers=0, pin_memory=not is_gnn,
-                              collate_fn=collate_fn)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=train_batch_size, shuffle=False,
+        num_workers=4, pin_memory=not is_gnn,
+        collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
+        persistent_workers=True,
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=1 if is_gnn else 32, shuffle=False,
+        num_workers=0, collate_fn=collate_fn,
+    )
     return train_loader, val_loader
 
 
-def pretrain_regression(
-    encoder,
-    train_assays,
-    val_assays,
-    n_epochs: int = 50,
-    n_support: int = 16,
-    n_query: int = 16,
-    n_episodes_train: int = 1000,
-    n_episodes_val: int = 200,
-    lr: float = 1e-3,
-    save_path: str = "ptn_ecfp_regression_shift_aware.pt",
-    shift_aware: bool = True,
-    seed: int = 42,
-):
-    """
-    Episodic training for PrototypicalNetworkRegression (kernel regression, MSE loss).
-    Works with any encoder: ECFPEncoder (fingerprint tensors) or PNAGNNEncoder (graphs).
-    Validates on RMSE (minimise). Early stopping patience = 25 epochs.
-    """
-    set_seed(seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on: {device}")
-
-    model = PrototypicalNetworkRegression(encoder).to(device)
-
-    # CHOSEN: Adam optimizer. Standard choice.
-    # ALTERNATIVE: AdamW with weight decay for regularization:
-    # optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-
-    # Learning rate scheduler: reduce LR when validation RMSE plateaus
-    # ALTERNATIVE: CosineAnnealingLR for smoother decay:
-    # scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=n_epochs)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=20, min_lr=1e-5
-        # patience=20: val RMSE is noisy (only 38-40 assays in val pool, random episodes).
-        # patience=10 was too aggressive — LR halved 7 times before epoch 100, starving
-        # the optimizer of any useful update in the final 30 epochs.
-        # min_lr=1e-5: prevent LR from decaying to near-zero before model has converged
-    )
-
-    train_loader, val_loader = _make_loaders(
-        encoder, train_assays, val_assays,
-        n_episodes_train, n_episodes_val, n_support, n_query, shift_aware,
-    )
-
-    best_val_rmse  = float("inf")
-    epochs_no_improve = 0
-    early_stop_patience = 25  # val is noisy but model consistently peaks early
-
-    encoder_cfg = _encoder_config(encoder)
-
-    for epoch in range(1, n_epochs + 1):
-        if epoch > 1:
-            train_loader.dataset.refresh_pool()   # type: ignore[union-attr]
-
-        train_metrics = train_epoch_regression(model, train_loader, optimizer, device)
-        val_metrics   = validate_regression(model, val_loader, device)
-
-        scheduler.step(val_metrics["rmse"])
-        current_lr = optimizer.param_groups[0]['lr']
-
-        print(
-            f"Epoch {epoch:3d}/{n_epochs} | "
-            f"Train Loss: {train_metrics['loss']:.4f} | "
-            f"Train RMSE: {train_metrics['rmse']:.4f} | "
-            f"Val RMSE: {val_metrics['rmse']:.4f} | "
-            f"Val MAE: {val_metrics['mae']:.4f} | "
-            f"LR: {current_lr:.2e}"
-        )
-
-        if val_metrics["rmse"] < best_val_rmse:
-            best_val_rmse = val_metrics["rmse"]
-            epochs_no_improve = 0
-            torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_rmse": best_val_rmse,
-                "config": {
-                    "model_type": "regression",
-                    "n_support":  n_support,
-                    "shift_aware": shift_aware,
-                    **encoder_cfg,
-                }
-            }, save_path)
-            print(f"  → Saved new best model (Val RMSE: {best_val_rmse:.4f})")
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= early_stop_patience:
-                print(f"\nEarly stopping at epoch {epoch} "
-                      f"(no improvement for {early_stop_patience} epochs).")
-                break
-
-    print(f"\nPretraining complete. Best Val RMSE: {best_val_rmse:.4f}")
-    return model
+def _batch_to_device(batch, device):
+    """Move (support_input, support_labels, query_input, query_labels) to device."""
+    s_in, s_lbl, q_in, q_lbl = batch
+    return s_in.to(device), s_lbl.to(device), q_in.to(device), q_lbl.to(device)
 
 
 # =============================================================================
-# CLASSIFICATION TRAINING — Part A
+# CLASSIFICATION TRAINING
 # =============================================================================
-
-def train_epoch_classification(model, loader, optimizer, device):
-    model.train()
-    total_loss    = 0.0
-    total_dauprc  = []
-    n_batches     = 0
-    use_amp       = device.type == "cuda"
-
-    for batch in loader:
-        support_fp, support_labels, query_fp, query_labels = batch
-        s_fp  = support_fp.to(device)
-        s_lbl = support_labels.to(device)
-        q_fp  = query_fp.to(device)
-        q_lbl = query_labels.to(device)
-
-        optimizer.zero_grad()
-        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-            loss, metrics = model.compute_loss_batched(s_fp, s_lbl, q_fp, q_lbl)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-
-        total_loss += loss.item()
-        if not np.isnan(metrics["delta_auprc"]):
-            total_dauprc.append(metrics["delta_auprc"])
-        n_batches += 1
-
-    avg_dauprc = float(np.mean(total_dauprc)) if total_dauprc else float("nan")
-    return {"loss": total_loss / n_batches, "delta_auprc": avg_dauprc}
-
-
-def validate_classification(model, loader, device):
-    model.eval()
-    total_bce   = 0.0
-    all_dauprc  = []
-    n_batches   = 0
-    use_amp     = device.type == "cuda"
-
-    with torch.no_grad():
-        for batch in loader:
-            support_fp, support_labels, query_fp, query_labels = batch
-            s_fp  = support_fp.to(device)
-            s_lbl = support_labels.to(device)
-            q_fp  = query_fp.to(device)
-            q_lbl = query_labels.to(device)
-
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
-                loss, metrics = model.compute_loss_batched(s_fp, s_lbl, q_fp, q_lbl)
-            total_bce += loss.item()
-            if not np.isnan(metrics["delta_auprc"]):
-                all_dauprc.append(metrics["delta_auprc"])
-            n_batches += 1
-
-    avg_dauprc = float(np.mean(all_dauprc)) if all_dauprc else float("nan")
-    return {"bce": total_bce / n_batches, "delta_auprc": avg_dauprc}
-
 
 def pretrain_classification(
     encoder,
-    train_assays,
-    val_assays,
+    train_assays: list[str],          # .jsonl.gz file paths — ALL training files
+    val_assays: list[str],            # .jsonl.gz file paths — all val files
     n_epochs: int = 100,
-    n_support: int = 16,
-    n_query: int = 16,
-    n_episodes_train: int = 1000,
-    n_episodes_val: int = 200,
-    lr: float = 1e-3,
+    tasks_per_batch: int = 16,        # episodes accumulated per optimizer step
+    n_support: int = 64,              # FS-Mol paper episode size
+    n_query: int = 256,               # FS-Mol paper episode size
+    n_episodes_train: int = 1000,     # episodes per epoch
+    n_episodes_val: int = 200,        # val episodes per epoch (~5 per val assay)
+    lr: float = 1e-4,                 # FS-Mol paper default (GNN); 1e-3 for ECFP
     save_path: str = "ptn_ecfp_classification_shift_aware.pt",
     shift_aware: bool = True,
     seed: int = 42,
 ):
     """
-    Episodic training for PrototypicalNetworkClassification (true PN, BCE loss).
-    Works with any encoder: ECFPEncoder (fingerprint tensors) or PNAGNNEncoder (graphs).
-    Validates on ΔAUPRC (maximise). Early stopping patience = 25 epochs.
+    Epoch-based episodic training for PrototypicalNetworkClassification (BCE loss).
+    Gradient accumulation over tasks_per_batch=16 episodes per optimizer step.
+    Streams from ALL training files each epoch. Validates and saves per epoch.
     """
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
 
-    model = PrototypicalNetworkClassification(encoder).to(device)
-
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=20, min_lr=1e-5
-    )
+    is_gnn  = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
+    n_accum = tasks_per_batch if is_gnn else 1   # see module docstring
 
     train_loader, val_loader = _make_loaders(
         encoder, train_assays, val_assays,
-        n_episodes_train, n_episodes_val, n_support, n_query, shift_aware,
+        n_episodes_train, n_episodes_val,
+        n_support, n_query, shift_aware,
     )
 
-    best_val_dauprc    = -float("inf")
-    epochs_no_improve  = 0
-    early_stop_patience = 25
-    encoder_cfg = _encoder_config(encoder)
+    model     = PrototypicalNetworkClassification(encoder).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    use_amp   = (device.type == "cuda")
+
+    encoder_cfg         = _encoder_config(encoder)
+    best_val_dauprc     = -float("inf")
+    no_improve          = 0
+    early_stop_patience = 50 if is_gnn else 25
+
+    print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}")
+    print(f"  Train files: {len(train_assays)}  |  Val files: {len(val_assays)}")
+    print(f"  Episodes/epoch: {n_episodes_train}  |  Steps/epoch: ~{n_episodes_train // tasks_per_batch}")
 
     for epoch in range(1, n_epochs + 1):
-        if epoch > 1:
-            train_loader.dataset.refresh_pool()   # type: ignore[union-attr]
+        # ------------------------------------------------------------------
+        # Training
+        # ------------------------------------------------------------------
+        model.train()
+        optimizer.zero_grad()
+        accum_count    = 0
+        step           = 0
+        epoch_loss_buf:   list[float] = []
+        epoch_dauprc_buf: list[float] = []
 
-        train_metrics = train_epoch_classification(model, train_loader, optimizer, device)
-        val_metrics   = validate_classification(model, val_loader, device)
+        for batch in train_loader:
+            s_in, s_lbl, q_in, q_lbl = _batch_to_device(batch, device)
 
-        scheduler.step(val_metrics["delta_auprc"])
-        current_lr = optimizer.param_groups[0]["lr"]
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+                loss, metrics = model.compute_loss_batched(s_in, s_lbl, q_in, q_lbl)
+
+            (loss / n_accum).backward()
+            accum_count += 1
+            epoch_loss_buf.append(loss.item())
+            if not np.isnan(metrics["delta_auprc"]):
+                epoch_dauprc_buf.append(metrics["delta_auprc"])
+
+            if accum_count == n_accum:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                accum_count = 0
+                step += 1
+
+        # discard any partial accumulated batch at epoch end
+        if accum_count > 0:
+            optimizer.zero_grad()
+
+        # ------------------------------------------------------------------
+        # Validation
+        # ------------------------------------------------------------------
+        model.eval()
+        val_dauprc_buf: list[float] = []
+        val_bce_buf:    list[float] = []
+        with torch.no_grad():
+            for vbatch in val_loader:
+                vs_in, vs_lbl, vq_in, vq_lbl = _batch_to_device(vbatch, device)
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                                    enabled=use_amp):
+                    vloss, vmet = model.compute_loss_batched(vs_in, vs_lbl, vq_in, vq_lbl)
+                val_bce_buf.append(vloss.item())
+                if not np.isnan(vmet["delta_auprc"]):
+                    val_dauprc_buf.append(vmet["delta_auprc"])
+
+        train_dauprc = float(np.nanmean(epoch_dauprc_buf)) if epoch_dauprc_buf else float("nan")
+        train_loss   = float(np.mean(epoch_loss_buf))       if epoch_loss_buf   else float("nan")
+        val_dauprc   = float(np.mean(val_dauprc_buf))       if val_dauprc_buf   else float("nan")
 
         print(
-            f"Epoch {epoch:3d}/{n_epochs} | "
-            f"Train BCE: {train_metrics['loss']:.4f} | "
-            f"Train ΔAUPRC: {train_metrics['delta_auprc']:+.4f} | "
-            f"Val ΔAUPRC: {val_metrics['delta_auprc']:+.4f} | "
-            f"LR: {current_lr:.2e}"
+            f"Epoch {epoch:3d}/{n_epochs} | Steps: {step} | "
+            f"Train BCE: {train_loss:.4f} | Train ΔAUPRC: {train_dauprc:+.4f} | "
+            f"Val ΔAUPRC: {val_dauprc:+.4f}"
         )
 
-        if val_metrics["delta_auprc"] > best_val_dauprc:
-            best_val_dauprc   = val_metrics["delta_auprc"]
-            epochs_no_improve = 0
+        # ------------------------------------------------------------------
+        # Checkpoint + early stopping
+        # ------------------------------------------------------------------
+        if val_dauprc > best_val_dauprc:
+            best_val_dauprc = val_dauprc
+            no_improve      = 0
             torch.save({
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
+                "epoch":               epoch,
+                "model_state_dict":    model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
-                "val_delta_auprc": best_val_dauprc,
+                "val_delta_auprc":     best_val_dauprc,
                 "config": {
                     "model_type":  "classification",
                     "n_support":   n_support,
                     "shift_aware": shift_aware,
                     **encoder_cfg,
-                    "n_support":     n_support,
-                    "shift_aware":   shift_aware,
                 },
             }, save_path)
-            print(f"  → Saved new best model (Val ΔAUPRC: {best_val_dauprc:+.4f})")
+            print(f"  → Saved best model (Val ΔAUPRC: {best_val_dauprc:+.4f})")
         else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= early_stop_patience:
+            no_improve += 1
+            if no_improve >= early_stop_patience:
                 print(f"\nEarly stopping at epoch {epoch} "
                       f"(no improvement for {early_stop_patience} epochs).")
                 break
 
     print(f"\nPretraining complete. Best Val ΔAUPRC: {best_val_dauprc:+.4f}")
+    return model
+
+
+# =============================================================================
+# REGRESSION TRAINING
+# =============================================================================
+
+def pretrain_regression(
+    encoder,
+    train_assays: list[str],
+    val_assays: list[str],
+    n_epochs: int = 100,
+    tasks_per_batch: int = 16,
+    n_support: int = 64,
+    n_query: int = 256,
+    n_episodes_train: int = 1000,
+    n_episodes_val: int = 200,
+    lr: float = 1e-4,
+    save_path: str = "ptn_ecfp_regression_shift_aware.pt",
+    shift_aware: bool = True,
+    seed: int = 42,
+):
+    """
+    Epoch-based episodic training for PrototypicalNetworkRegression (MSE loss).
+    Same protocol as pretrain_classification but minimises RMSE.
+    """
+    set_seed(seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}")
+
+    is_gnn  = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
+    n_accum = tasks_per_batch if is_gnn else 1
+
+    train_loader, val_loader = _make_loaders(
+        encoder, train_assays, val_assays,
+        n_episodes_train, n_episodes_val,
+        n_support, n_query, shift_aware,
+    )
+
+    model     = PrototypicalNetworkRegression(encoder).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    use_amp   = (device.type == "cuda")
+
+    encoder_cfg         = _encoder_config(encoder)
+    best_val_rmse       = float("inf")
+    no_improve          = 0
+    early_stop_patience = 50 if is_gnn else 25
+
+    print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}")
+    print(f"  Train files: {len(train_assays)}  |  Val files: {len(val_assays)}")
+
+    for epoch in range(1, n_epochs + 1):
+        # ------------------------------------------------------------------
+        # Training
+        # ------------------------------------------------------------------
+        model.train()
+        optimizer.zero_grad()
+        accum_count   = 0
+        step          = 0
+        epoch_loss_buf: list[float] = []
+        epoch_rmse_buf: list[float] = []
+
+        for batch in train_loader:
+            s_in, s_lbl, q_in, q_lbl = _batch_to_device(batch, device)
+
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+                loss, metrics = model.compute_loss_batched(s_in, s_lbl, q_in, q_lbl)
+
+            (loss / n_accum).backward()
+            accum_count += 1
+            epoch_loss_buf.append(loss.item())
+            epoch_rmse_buf.append(metrics["rmse"])
+
+            if accum_count == n_accum:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                accum_count = 0
+                step += 1
+
+        if accum_count > 0:
+            optimizer.zero_grad()
+
+        # ------------------------------------------------------------------
+        # Validation
+        # ------------------------------------------------------------------
+        model.eval()
+        val_rmse_buf: list[float] = []
+        val_mae_buf:  list[float] = []
+        with torch.no_grad():
+            for vbatch in val_loader:
+                vs_in, vs_lbl, vq_in, vq_lbl = _batch_to_device(vbatch, device)
+                with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                                    enabled=use_amp):
+                    _, vmet = model.compute_loss_batched(vs_in, vs_lbl, vq_in, vq_lbl)
+                val_rmse_buf.append(vmet["rmse"])
+                val_mae_buf.append(vmet["mae"])
+
+        train_rmse = float(np.mean(epoch_rmse_buf)) if epoch_rmse_buf else float("nan")
+        train_loss = float(np.mean(epoch_loss_buf)) if epoch_loss_buf else float("nan")
+        val_rmse   = float(np.mean(val_rmse_buf))   if val_rmse_buf   else float("nan")
+        val_mae    = float(np.mean(val_mae_buf))     if val_mae_buf    else float("nan")
+
+        print(
+            f"Epoch {epoch:3d}/{n_epochs} | Steps: {step} | "
+            f"Train Loss: {train_loss:.4f} | Train RMSE: {train_rmse:.4f} | "
+            f"Val RMSE: {val_rmse:.4f} | Val MAE: {val_mae:.4f}"
+        )
+
+        if val_rmse < best_val_rmse:
+            best_val_rmse = val_rmse
+            no_improve    = 0
+            torch.save({
+                "epoch":               epoch,
+                "model_state_dict":    model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_rmse":            best_val_rmse,
+                "config": {
+                    "model_type":  "regression",
+                    "n_support":   n_support,
+                    "shift_aware": shift_aware,
+                    **encoder_cfg,
+                },
+            }, save_path)
+            print(f"  → Saved best model (Val RMSE: {best_val_rmse:.4f})")
+        else:
+            no_improve += 1
+            if no_improve >= early_stop_patience:
+                print(f"\nEarly stopping at epoch {epoch} "
+                      f"(no improvement for {early_stop_patience} epochs).")
+                break
+
+    print(f"\nPretraining complete. Best Val RMSE: {best_val_rmse:.4f}")
     return model

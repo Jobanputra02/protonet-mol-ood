@@ -2,7 +2,7 @@
 /data/
 
 # Model checkpoints
-checkpoints/
+# checkpoints/
 # outputs/
 
 # Python
@@ -33,4 +33,5 @@ Thumbs.db
 # Misc
 *.log
 *.tmp
-*.out
+
+*.csv

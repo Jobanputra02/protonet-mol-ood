@@ -2,6 +2,8 @@
 
 Scripts for auditing the FS-Mol and DrugOOD datasets before and independently of any model training. All scripts read paths from `config.py` and write outputs to `FIGURES_DIR` / `RESULTS_DIR`.
 
+For model evaluation results, training configuration, and comparison figures, see [Analysis/model/README.md](../model/README.md) and the [main README](../../README.md).
+
 ---
 
 ## Scripts
@@ -169,10 +171,6 @@ Many DrugOOD assays have as few as 1 molecule in some splits. These produce NaN 
 
 ![Scaffold diversity](../../outputs/figures/fig_scaffold_diversity_per_task.png)
 
-**Figure — Tanimoto distance distributions (FS-Mol vs DrugOOD):**
+**Figure — Tanimoto distance distributions and t-SNE chemical space (FS-Mol vs DrugOOD):**
 
-![Tanimoto](../../outputs/figures/tanimoto_distances.png)
-
-**Figure — t-SNE of FS-Mol vs DrugOOD chemical space:**
-
-![t-SNE](../../outputs/figures/tsne_fsmol_vs_drugood.png)
+> Run `python Analysis/data/chemical_diversity.py` to generate these figures.

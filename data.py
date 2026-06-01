@@ -26,8 +26,9 @@ from typing import Optional
 # attributes (MolFromSmiles, GetMorganFingerprintAsBitVect, etc.).
 # These are valid at runtime; the "# type: ignore" comments suppress the
 # Pylance errors without affecting execution.
-from rdkit import Chem  # type: ignore
-from rdkit.Chem import AllChem  # type: ignore
+from rdkit import Chem, RDLogger  # type: ignore
+from rdkit.Chem import AllChem    # type: ignore
+RDLogger.DisableLog('rdApp.*')    # suppress valence / sanitization warnings
 from rdkit.Chem.Scaffolds import MurckoScaffold  # type: ignore
 
 # RDKit 2022+ exposes a new generator API for fingerprints.
@@ -198,23 +199,9 @@ class EpisodeSampler:
     def _sample_shift_aware_episode(self, dataset: AssayDataset):
         """
         Support and query come from DIFFERENT scaffold families.
-
-        Mechanism:
-        1. Pick two distinct scaffold groups (each with >= min_group distinct molecules)
-        2. Sample support from group A, query from group B
-        3. The embedding must generalize across scaffold families to predict well
-
-        This is what makes pretraining OOD-aware.
-
-        IMPORTANT: singleton scaffold groups (1 molecule) are excluded. Sampling 16
-        molecules with replacement from a size-1 group produces 16 identical copies →
-        uniform softmax weights → prediction = constant → zero gradient. Requiring
-        at least n_support//4 distinct molecules per group ensures meaningful episodes.
-        Falls back to random episode if fewer than 2 usable groups exist.
+        Uses whatever molecules are available — no replacement, capped to pool size.
+        Falls back to random if fewer than 2 usable scaffold groups.
         """
-        # Require at least 4 distinct molecules per group (for n_support=16).
-        # Singleton groups cause degenerate episodes: all support copies are identical,
-        # distances are all equal, softmax is uniform → prediction ignores query → no learning.
         min_group = max(2, self.n_support // 4)
         usable_keys = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
 
@@ -222,17 +209,14 @@ class EpisodeSampler:
             return self._sample_random_episode(dataset)
 
         chosen = np.random.choice(len(usable_keys), size=2, replace=False)
-        support_scaffold = usable_keys[chosen[0]]
-        query_scaffold   = usable_keys[chosen[1]]
+        support_pool = dataset.scaffold_groups[usable_keys[chosen[0]]]
+        query_pool   = dataset.scaffold_groups[usable_keys[chosen[1]]]
 
-        support_pool = dataset.scaffold_groups[support_scaffold]
-        query_pool   = dataset.scaffold_groups[query_scaffold]
-
-        # Use replace=False when group is large enough; replace=True only as last resort.
-        sup_idx = np.random.choice(support_pool, size=self.n_support,
-                                   replace=len(support_pool) < self.n_support)
-        qry_idx = np.random.choice(query_pool,   size=self.n_query,
-                                   replace=len(query_pool)   < self.n_query)
+        # Cap to available pool size — no replacement, no duplication
+        n_sup = min(self.n_support, len(support_pool))
+        n_qry = min(self.n_query,   len(query_pool))
+        sup_idx = np.random.choice(support_pool, size=n_sup, replace=False)
+        qry_idx = np.random.choice(query_pool,   size=n_qry, replace=False)
 
         return self._indices_to_tensors(dataset, sup_idx, qry_idx)
 
@@ -275,8 +259,11 @@ class EpisodeSampler:
         chosen = np.random.choice(len(usable_keys), size=2, replace=False)
         sup_pool = dataset.scaffold_groups[usable_keys[chosen[0]]]
         qry_pool = dataset.scaffold_groups[usable_keys[chosen[1]]]
-        sup_idx = np.random.choice(sup_pool, size=self.n_support, replace=len(sup_pool) < self.n_support)
-        qry_idx = np.random.choice(qry_pool, size=self.n_query,   replace=len(qry_pool) < self.n_query)
+        # Cap to available size — no replacement, no duplicates
+        n_sup = min(self.n_support, len(sup_pool))
+        n_qry = min(self.n_query,   len(qry_pool))
+        sup_idx = np.random.choice(sup_pool, size=n_sup, replace=False)
+        qry_idx = np.random.choice(qry_pool, size=n_qry, replace=False)
         return sup_idx, qry_idx
 
     def _get_episode_indices_random(self, dataset: "AssayDataset"):
@@ -363,19 +350,15 @@ def _load_assay_file(filepath: str) -> "AssayDataset":
 
 class FSMolEpisodeDataset(Dataset):
     """
-    Pool-based episodic dataset for FS-Mol pretraining.
+    Streaming episodic dataset for FS-Mol pretraining (ECFP encoder).
 
-    At construction (and optionally between epochs), loads `pool_size` assays from
-    randomly chosen files into RAM.  Each __getitem__ samples an episode from the
-    in-memory pool — no disk I/O during training, so the GPU stays fed.
+    Each __getitem__ picks a random file from ALL training assays, loads it from
+    disk, and samples one episode. This matches the FS-Mol paper's approach of
+    streaming through the full training set rather than caching a fixed pool.
 
-    Call refresh_pool() at the start of each epoch to rotate in new assays and
-    expose the model to the full diversity of the ~16k filtered assays over time.
-
-    Memory footprint: pool_size × ~1.5 MB/assay (fingerprints + labels).
-        pool_size=500  →  ~750 MB
-        pool_size=1000 →  ~1.5 GB
-        pool_size=2000 →  ~3 GB
+    Requires only n_support molecules per assay (not n_support + n_query).
+    Variable episode sizes: small assays contribute shorter episodes rather than
+    being excluded.
     """
 
     def __init__(
@@ -385,7 +368,7 @@ class FSMolEpisodeDataset(Dataset):
         n_support: int = 16,
         n_query: int = 16,
         shift_aware: bool = True,
-        pool_size: int = 1000,
+        pool_size: int = 0,   # kept for API compatibility — ignored
     ):
         if not assay_files:
             raise ValueError("No assay files provided.")
@@ -395,38 +378,22 @@ class FSMolEpisodeDataset(Dataset):
         self.n_query     = n_query
         self.sampler     = EpisodeSampler(n_support, n_query)
         self.shift_aware = shift_aware
-        self.pool_size   = pool_size
-        self._pool: list = []
-        self.refresh_pool(verbose=True)
+        print(f"  Streaming ECFP dataset: {len(self.all_files)} training files, "
+              f"min {n_support} molecules per assay")
 
     def refresh_pool(self, verbose: bool = False) -> None:
-        """
-        Load a fresh random subset of assay files into memory.
-        Call between epochs to ensure the model sees the full dataset over time.
-        """
-        n       = min(self.pool_size, len(self.all_files))
-        files   = np.random.choice(self.all_files, size=n, replace=False)
-        pool    = []
-        min_len = self.n_support + self.n_query
-        for path in files:
-            ds = _load_assay_file(path)
-            if len(ds) >= min_len:
-                pool.append(ds)
-        if not pool:
-            raise ValueError(
-                f"Pool is empty after sampling {n} files — "
-                f"no assay has >= {min_len} exact-measurement molecules."
-            )
-        self._pool = pool
-        if verbose:
-            print(f"  Pool loaded: {len(pool)} assays in RAM ({n} files sampled)")
+        pass   # no-op — streaming loads fresh from disk each episode
 
     def __len__(self) -> int:
         return self.n_episodes
 
     def __getitem__(self, idx):
-        ds = self._pool[np.random.randint(len(self._pool))]
-        return self.sampler.sample_episode(ds, shift_aware=self.shift_aware)
+        for _ in range(200):
+            path = self.all_files[np.random.randint(len(self.all_files))]
+            ds = _load_assay_file(path)
+            if len(ds) >= self.n_support:
+                return self.sampler.sample_episode(ds, shift_aware=self.shift_aware)
+        raise RuntimeError("Could not find a valid assay after 200 attempts.")
 
 
 # =============================================================================
@@ -461,6 +428,31 @@ def _build_graphs_for_assay(dataset: "AssayDataset") -> list:
     return graphs
 
 
+def _build_fsmol_graphs_for_assay(dataset: "AssayDataset") -> list:
+    """
+    Build FS-Mol-faithful PyG Data objects for every molecule in `dataset`.
+    Uses smiles_to_fsmol_graph: Kekulized, 3-dim bond-type one-hot edges,
+    plus graph-level ECFP (1,2048) and descriptor (1,42) tensors.
+    """
+    from featurize import smiles_to_fsmol_graph, FSMOL_NODE_FEAT_DIM
+    import torch
+    from torch_geometric.data import Data
+
+    _dummy = Data(
+        x=torch.zeros((1, FSMOL_NODE_FEAT_DIM), dtype=torch.float),
+        edge_index=torch.zeros((2, 0), dtype=torch.long),
+        edge_attr=torch.zeros((0, 3), dtype=torch.float),
+        ecfp=torch.zeros((1, 2048), dtype=torch.float),
+        descriptors=torch.zeros((1, 42), dtype=torch.float),
+    )
+
+    graphs = []
+    for smi in dataset.scaffolds:
+        g = smiles_to_fsmol_graph(smi)
+        graphs.append(g if g is not None else _dummy)
+    return graphs
+
+
 def graph_episode_collate(batch):
     """
     Collate function for FSMolGraphEpisodeDataset.
@@ -487,14 +479,20 @@ def graph_episode_collate(batch):
 
 class FSMolGraphEpisodeDataset(Dataset):
     """
-    Episodic dataset for GNN-based training — mirrors FSMolEpisodeDataset but
-    returns PyG graph objects instead of fingerprint tensors.
+    Streaming episodic dataset for GNN-based training.
 
-    refresh_pool() loads a fresh set of assays, computes PyG graphs for every
-    molecule in each assay (stored in assay._graphs), then caches them in RAM.
-    __getitem__ samples an episode and returns lists of PyG Data objects.
+    Each __getitem__ picks a random training file, loads it from disk, samples
+    episode indices, then builds PyG graphs ONLY for the selected molecules.
+    This matches the FS-Mol paper: all training assays are accessible each epoch,
+    and graph featurization happens on-demand rather than pre-caching the pool.
 
-    Use with graph_episode_collate as the DataLoader's collate_fn.
+    Key advantages over the old pool approach:
+      - Trains on all 26,868 assays (vs 21 with pool_size=750, min_len=320)
+      - Builds only ~320 graphs per episode (vs all molecules in pool assays)
+      - Variable episode sizes: small assays (< n_support+n_query) are included
+
+    Use with graph_episode_collate and batch_size=1 (variable episode sizes).
+    Set num_workers >= 4 to overlap disk I/O with GPU processing.
     """
 
     def __init__(
@@ -504,57 +502,71 @@ class FSMolGraphEpisodeDataset(Dataset):
         n_support: int = 16,
         n_query: int = 16,
         shift_aware: bool = True,
-        pool_size: int = 750,
+        pool_size: int = 0,   # kept for API compatibility — ignored
+        fsmol_style: bool = False,
     ):
         if not assay_files:
             raise ValueError("No assay files provided.")
-        self.all_files  = assay_files
-        self.n_episodes = n_episodes_per_epoch
-        self.n_support  = n_support
-        self.n_query    = n_query
-        self.sampler    = EpisodeSampler(n_support, n_query)
+        self.all_files   = assay_files
+        self.n_episodes  = n_episodes_per_epoch
+        self.n_support   = n_support
+        self.n_query     = n_query
+        self.sampler     = EpisodeSampler(n_support, n_query)
         self.shift_aware = shift_aware
-        self.pool_size  = pool_size
-        self._pool: list = []
-        self.refresh_pool(verbose=True)
+        self.fsmol_style = fsmol_style
+        self._setup_graph_builder()
+        print(f"  Streaming GNN dataset: {len(self.all_files)} training files, "
+              f"min {n_support} molecules per assay")
+
+    def _setup_graph_builder(self):
+        """Cache featurisation imports and dummy graph to avoid repeated imports."""
+        import torch
+        from torch_geometric.data import Data
+        if self.fsmol_style:
+            from featurize import smiles_to_fsmol_graph, FSMOL_NODE_FEAT_DIM
+            self._smiles_to_graph = smiles_to_fsmol_graph
+            self._dummy = Data(
+                x=torch.zeros((1, FSMOL_NODE_FEAT_DIM), dtype=torch.float),
+                edge_index=torch.zeros((2, 0), dtype=torch.long),
+                edge_attr=torch.zeros((0, 3), dtype=torch.float),
+                ecfp=torch.zeros((1, 2048), dtype=torch.float),
+                descriptors=torch.zeros((1, 42), dtype=torch.float),
+            )
+        else:
+            from featurize import smiles_to_graph, NODE_FEAT_DIM, EDGE_FEAT_DIM
+            self._smiles_to_graph = smiles_to_graph
+            self._dummy = Data(
+                x=torch.zeros((1, NODE_FEAT_DIM), dtype=torch.float),
+                edge_index=torch.zeros((2, 0), dtype=torch.long),
+                edge_attr=torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float),
+            )
+
+    def _build_graphs(self, smiles_list: list[str]) -> list:
+        """Build graphs for a list of SMILES — only the selected episode molecules."""
+        return [self._smiles_to_graph(smi) or self._dummy for smi in smiles_list]
 
     def refresh_pool(self, verbose: bool = False) -> None:
-        n     = min(self.pool_size, len(self.all_files))
-        files = np.random.choice(self.all_files, size=n, replace=False)
-        pool  = []
-        min_len = self.n_support + self.n_query
-        for path in files:
-            ds = _load_assay_file(path)
-            if len(ds) < min_len:
-                continue
-            ds._graphs = _build_graphs_for_assay(ds)
-            pool.append(ds)
-        if not pool:
-            raise ValueError("Graph pool is empty — no assay has enough valid molecules.")
-        self._pool = pool
-        if verbose:
-            print(f"  Graph pool loaded: {len(pool)} assays in RAM ({n} files sampled)")
+        pass  # no-op — streaming loads fresh from disk each episode
 
     def __len__(self) -> int:
         return self.n_episodes
 
     def __getitem__(self, idx):
-        ds = self._pool[np.random.randint(len(self._pool))]
-        return self._sample_graph_episode(ds)
-
-    def _sample_graph_episode(self, dataset: "AssayDataset"):
-        """Sample episode indices via EpisodeSampler and convert to graph lists."""
-        # Reuse index sampling logic from EpisodeSampler
-        if self.shift_aware and len(dataset.scaffold_groups) >= 2:
-            sup_idx, qry_idx = self.sampler._get_episode_indices_shift_aware(dataset)
-        else:
-            sup_idx, qry_idx = self.sampler._get_episode_indices_random(dataset)
-
-        sup_graphs = [dataset._graphs[i] for i in sup_idx]
-        qry_graphs = [dataset._graphs[i] for i in qry_idx]
-        sup_labels = torch.tensor(dataset.labels[sup_idx])
-        qry_labels = torch.tensor(dataset.labels[qry_idx])
-        return sup_graphs, sup_labels, qry_graphs, qry_labels
+        for _ in range(200):
+            path = self.all_files[np.random.randint(len(self.all_files))]
+            ds = _load_assay_file(path)
+            if len(ds) < self.n_support:
+                continue
+            if self.shift_aware and len(ds.scaffold_groups) >= 2:
+                sup_idx, qry_idx = self.sampler._get_episode_indices_shift_aware(ds)
+            else:
+                sup_idx, qry_idx = self.sampler._get_episode_indices_random(ds)
+            sup_graphs = self._build_graphs([ds.scaffolds[i] for i in sup_idx])
+            qry_graphs = self._build_graphs([ds.scaffolds[i] for i in qry_idx])
+            sup_labels = torch.tensor(ds.labels[sup_idx])
+            qry_labels = torch.tensor(ds.labels[qry_idx])
+            return sup_graphs, sup_labels, qry_graphs, qry_labels
+        raise RuntimeError("Could not find a valid assay after 200 attempts.")
 
 
 class DrugOODEvalDataset:

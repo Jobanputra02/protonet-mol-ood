@@ -16,7 +16,7 @@ import pandas as pd
 from scipy import stats
 from sklearn.metrics import average_precision_score
 from model import (PrototypicalNetworkRegression, PrototypicalNetworkClassification,
-                   ECFPEncoder, PNAGNNEncoder)
+                   ECFPEncoder, PNAGNNEncoder, FSMolGNNEncoder)
 from data import DrugOODEvalDataset, AssayDataset
 
 from config import RESULTS_DIR
@@ -49,30 +49,51 @@ def _unwrap(model):
 
 
 def _is_gnn(model) -> bool:
-    return isinstance(_unwrap(model).encoder, PNAGNNEncoder)
+    return isinstance(_unwrap(model).encoder, (PNAGNNEncoder, FSMolGNNEncoder))
 
 
-def _mol_input(assay: AssayDataset, indices, device: torch.device, gnn: bool):
+def _is_fsmol_gnn(model) -> bool:
+    return isinstance(_unwrap(model).encoder, FSMolGNNEncoder)
+
+
+def _mol_input(assay: AssayDataset, indices, device: torch.device, gnn: bool,
+               fsmol_style: bool = False):
     """
     Build the encoder input for `indices` from `assay`.
     ECFP: returns Tensor(n, 2048).
     GNN:  builds PyG graphs from SMILES and returns a PyG Batch on `device`.
+    fsmol_style=True uses smiles_to_fsmol_graph for FSMolGNNEncoder.
     """
     if gnn:
-        from featurize import smiles_to_graph
-        from torch_geometric.data import Batch as PyGBatch, Data
-        import torch as _torch
-        from featurize import NODE_FEAT_DIM, EDGE_FEAT_DIM
-        _dummy = Data(
-            x=_torch.zeros((1, NODE_FEAT_DIM), dtype=_torch.float),
-            edge_index=_torch.zeros((2, 0), dtype=_torch.long),
-            edge_attr=_torch.zeros((0, EDGE_FEAT_DIM), dtype=_torch.float),
-        )
-        graphs = []
-        for i in indices:
-            smi = assay.scaffolds[i]          # scaffolds field stores SMILES
-            g   = smiles_to_graph(smi)
-            graphs.append(g if g is not None else _dummy)
+        from torch_geometric.data import Batch as PyGBatch
+        if fsmol_style:
+            from featurize import smiles_to_fsmol_graph, FSMOL_NODE_FEAT_DIM
+            from torch_geometric.data import Data
+            _dummy = Data(
+                x=torch.zeros((1, FSMOL_NODE_FEAT_DIM), dtype=torch.float),
+                edge_index=torch.zeros((2, 0), dtype=torch.long),
+                edge_attr=torch.zeros((0, 3), dtype=torch.float),
+                ecfp=torch.zeros((1, 2048), dtype=torch.float),
+                descriptors=torch.zeros((1, 42), dtype=torch.float),
+            )
+            graphs = []
+            for i in indices:
+                smi = assay.scaffolds[i]
+                g   = smiles_to_fsmol_graph(smi)
+                graphs.append(g if g is not None else _dummy)
+        else:
+            from featurize import smiles_to_graph, NODE_FEAT_DIM, EDGE_FEAT_DIM
+            from torch_geometric.data import Data
+            _dummy = Data(
+                x=torch.zeros((1, NODE_FEAT_DIM), dtype=torch.float),
+                edge_index=torch.zeros((2, 0), dtype=torch.long),
+                edge_attr=torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float),
+            )
+            graphs = []
+            for i in indices:
+                smi = assay.scaffolds[i]
+                g   = smiles_to_graph(smi)
+                graphs.append(g if g is not None else _dummy)
         return PyGBatch.from_data_list(graphs).to(device)
     else:
         return torch.tensor(
@@ -113,37 +134,88 @@ def _compute_metrics(preds_np, targets_np, binary_labels, is_classification: boo
 # MULTI-SCALE EVALUATION (Phase 3 — main evaluation function)
 # =============================================================================
 
-def _smiles_to_batch(smiles_list: list[str], device: torch.device):
+def _smiles_to_batch(smiles_list: list[str], device: torch.device,
+                     fsmol_style: bool = False):
     """Convert a list of SMILES to a PyG Batch on device. Used for GNN DrugOOD eval."""
-    from featurize import smiles_to_graph, NODE_FEAT_DIM, EDGE_FEAT_DIM
     from torch_geometric.data import Batch as PyGBatch, Data
-    dummy = Data(
-        x=torch.zeros((1, NODE_FEAT_DIM), dtype=torch.float),
-        edge_index=torch.zeros((2, 0), dtype=torch.long),
-        edge_attr=torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float),
-    )
-    graphs = [smiles_to_graph(smi) or dummy for smi in smiles_list]
+    if fsmol_style:
+        from featurize import smiles_to_fsmol_graph, FSMOL_NODE_FEAT_DIM
+        dummy = Data(
+            x=torch.zeros((1, FSMOL_NODE_FEAT_DIM), dtype=torch.float),
+            edge_index=torch.zeros((2, 0), dtype=torch.long),
+            edge_attr=torch.zeros((0, 3), dtype=torch.float),
+            ecfp=torch.zeros((1, 2048), dtype=torch.float),
+            descriptors=torch.zeros((1, 42), dtype=torch.float),
+        )
+        graphs = [smiles_to_fsmol_graph(smi) or dummy for smi in smiles_list]
+    else:
+        from featurize import smiles_to_graph, NODE_FEAT_DIM, EDGE_FEAT_DIM
+        dummy = Data(
+            x=torch.zeros((1, NODE_FEAT_DIM), dtype=torch.float),
+            edge_index=torch.zeros((2, 0), dtype=torch.long),
+            edge_attr=torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float),
+        )
+        graphs = [smiles_to_graph(smi) or dummy for smi in smiles_list]
     return PyGBatch.from_data_list(graphs).to(device)
 
 
 def _gnn_predict_chunked(
-    model, ctx_batch, ctx_lbl: torch.Tensor,
+    model, ctx_emb: torch.Tensor, ctx_lbl: torch.Tensor,
     query_smiles: list[str], device: torch.device,
     chunk_size: int = 1024,
+    fsmol_style: bool = False,
 ) -> np.ndarray:
     """
-    Run model.forward over query_smiles in chunks to avoid GPU OOM.
-    Support (ctx_batch + ctx_lbl) is re-used for every chunk — it is small
-    (≤512 molecules) so re-encoding it is cheap compared to holding a 19k-graph
-    batch in GPU memory.
+    Run prediction over query_smiles in chunks to avoid GPU OOM.
+    ctx_emb must be pre-encoded by the caller (encode support once, not per chunk).
     """
+    m = _unwrap(model)
     all_preds: list[np.ndarray] = []
     for start in range(0, len(query_smiles), chunk_size):
         chunk_smiles = query_smiles[start : start + chunk_size]
-        chunk_batch  = _smiles_to_batch(chunk_smiles, device)
-        preds        = model.forward(ctx_batch, ctx_lbl, chunk_batch)
+        chunk_batch  = _smiles_to_batch(chunk_smiles, device, fsmol_style=fsmol_style)
+        qry_emb      = m.encoder(chunk_batch)
+        preds        = m.predict_from_embeddings(ctx_emb, ctx_lbl, qry_emb)
         all_preds.append(preds.cpu().numpy())
     return np.concatenate(all_preds) if all_preds else np.array([])
+
+
+def _featurize_smiles_list(smiles_list: list[str], fsmol: bool) -> list:
+    """Featurize SMILES → PyG Data objects (CPU). Pre-compute once per dataset to amortize RDKit cost."""
+    from torch_geometric.data import Data
+    if fsmol:
+        from featurize import smiles_to_fsmol_graph, FSMOL_NODE_FEAT_DIM
+        dummy = Data(
+            x=torch.zeros((1, FSMOL_NODE_FEAT_DIM), dtype=torch.float),
+            edge_index=torch.zeros((2, 0), dtype=torch.long),
+            edge_attr=torch.zeros((0, 3), dtype=torch.float),
+            ecfp=torch.zeros((1, 2048), dtype=torch.float),
+            descriptors=torch.zeros((1, 42), dtype=torch.float),
+        )
+        return [smiles_to_fsmol_graph(smi) or dummy for smi in smiles_list]
+    else:
+        from featurize import smiles_to_graph, NODE_FEAT_DIM, EDGE_FEAT_DIM
+        dummy = Data(
+            x=torch.zeros((1, NODE_FEAT_DIM), dtype=torch.float),
+            edge_index=torch.zeros((2, 0), dtype=torch.long),
+            edge_attr=torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float),
+        )
+        return [smiles_to_graph(smi) or dummy for smi in smiles_list]
+
+
+def _encode_smiles_chunked(
+    model, smiles_list: list[str], device: torch.device,
+    fsmol: bool, chunk_size: int = 2048,
+) -> torch.Tensor:
+    """Encode all SMILES to embeddings in chunks. Returns (n, emb_dim) on device."""
+    m = _unwrap(model)
+    if not smiles_list:
+        return torch.zeros((0,), device=device)
+    parts = []
+    for start in range(0, len(smiles_list), chunk_size):
+        batch = _smiles_to_batch(smiles_list[start:start + chunk_size], device, fsmol_style=fsmol)
+        parts.append(m.encoder(batch))
+    return torch.cat(parts, dim=0)
 
 
 def evaluate_drugood_multiscale(
@@ -164,56 +236,81 @@ def evaluate_drugood_multiscale(
     """
     model.eval()
     gnn             = _is_gnn(model)
+    fsmol           = _is_fsmol_gnn(model)
     is_classif      = isinstance(_unwrap(model), PrototypicalNetworkClassification)
     rows = []
 
     with torch.no_grad():
         for eval_dataset in eval_datasets:
+            # ------------------------------------------------------------------
+            # GNN: pre-featurize all context molecules and pre-encode both query
+            # sets ONCE per dataset — amortizes RDKit + GNN cost across all
+            # (context_size × query_set × seed) combinations (~24× fewer passes)
+            # ------------------------------------------------------------------
+            if gnn:
+                from torch_geometric.data import Batch as PyGBatch
+                ctx_graphs_cache = _featurize_smiles_list(eval_dataset.context_smiles, fsmol)
+                qry_emb_cache = {
+                    "ood_test": _encode_smiles_chunked(
+                        model, eval_dataset.ood_test_smiles, device, fsmol),
+                    "iid_test": _encode_smiles_chunked(
+                        model, eval_dataset.iid_test_smiles, device, fsmol),
+                }
+
             for context_size in context_sizes:
                 for query_set in ["ood_test", "iid_test"]:
                     seed_metrics: list[dict] = []
 
-                    for seed in seeds:
-                        ctx_fp, ctx_labels, test_fp, test_labels, test_binary = \
-                            eval_dataset.get_episode(context_size, query_set, seed)
-
-                        if len(test_fp) == 0:
+                    if gnn:
+                        pre_qry_emb = qry_emb_cache[query_set]
+                        if len(pre_qry_emb) == 0:
                             continue
+                        test_labels = (eval_dataset.ood_test_labels if query_set == "ood_test"
+                                       else eval_dataset.iid_test_labels)
+                        test_binary = (eval_dataset.ood_test_binary if query_set == "ood_test"
+                                       else eval_dataset.iid_test_binary)
+                        targets_np  = test_labels.numpy()
+                        n_ctx       = min(context_size, len(eval_dataset.context_smiles))
 
+                    for seed in seeds:
                         if gnn:
-                            rng   = np.random.RandomState(seed)
-                            n_ctx = min(context_size, len(eval_dataset.context_smiles))
-                            idx   = rng.choice(len(eval_dataset.context_smiles), size=n_ctx, replace=False)
-                            ctx_batch = _smiles_to_batch(
-                                [eval_dataset.context_smiles[i] for i in idx], device
+                            rng = np.random.RandomState(seed)
+                            idx = rng.choice(len(eval_dataset.context_smiles), size=n_ctx, replace=False)
+                            ctx_batch = PyGBatch.from_data_list(
+                                [ctx_graphs_cache[i] for i in idx]
+                            ).to(device)
+                            ctx_lbl = eval_dataset.context_labels[idx].to(device)
+                            ctx_emb = _unwrap(model).encoder(ctx_batch)
+                            preds   = _unwrap(model).predict_from_embeddings(
+                                ctx_emb, ctx_lbl, pre_qry_emb
                             )
-                            ctx_lbl     = ctx_labels.to(device)
-                            query_smiles = (eval_dataset.ood_test_smiles
-                                            if query_set == "ood_test"
-                                            else eval_dataset.iid_test_smiles)
-                            preds_np = _gnn_predict_chunked(
-                                model, ctx_batch, ctx_lbl, query_smiles, device, chunk_size=1024
-                            )
-                        else:
-                            ctx_lbl  = ctx_labels.to(device)
-                            preds    = model.forward(ctx_fp.to(device), ctx_lbl, test_fp.to(device))
                             preds_np = preds.cpu().numpy()
+                        else:
+                            ctx_fp, ctx_labels, test_fp, test_labels, test_binary = \
+                                eval_dataset.get_episode(context_size, query_set, seed)
+                            if len(test_fp) == 0:
+                                continue
+                            ctx_lbl    = ctx_labels.to(device)
+                            preds      = model.forward(ctx_fp.to(device), ctx_lbl, test_fp.to(device))
+                            preds_np   = preds.cpu().numpy()
+                            targets_np = test_labels.numpy()
 
-                        targets_np = test_labels.numpy()
                         seed_metrics.append(_compute_metrics(preds_np, targets_np, test_binary, is_classif))
 
                     if not seed_metrics:
                         continue
 
                     # Average metrics across seeds; report std for key metrics
-                    mean_m = {k: float(np.nanmean([m[k] for m in seed_metrics])) for k in seed_metrics[0]}
-                    std_m  = {k: float(np.std( [m[k] for m in seed_metrics])) for k in seed_metrics[0]}
+                    with np.errstate(all='ignore'):
+                        mean_m = {k: float(np.nanmean([m[k] for m in seed_metrics])) for k in seed_metrics[0]}
+                    std_m  = {k: float(np.std([m[k] for m in seed_metrics])) for k in seed_metrics[0]}
 
+                    actual_n = n_ctx if gnn else int(len(ctx_labels))
                     row = {
                         "split_type":        eval_dataset.split_type,
                         "query_set":         query_set,
                         "context_set_size":  context_size,
-                        "actual_context_n":  int(len(ctx_labels)),
+                        "actual_context_n":  actual_n,
                         "n_test":            int(len(test_labels)),
                         "n_seeds":           len(seed_metrics),
                         "delta_auprc":       mean_m["delta_auprc"],
@@ -245,11 +342,20 @@ def _build_encoder_from_config(config: dict, device: torch.device) -> torch.nn.M
     """Reconstruct the encoder from the config dict stored in a checkpoint."""
     encoder_type  = config.get("encoder_type", "ecfp")
     embedding_dim = config.get("embedding_dim", 256)
+    deg_list      = config.get("deg", None)
+    deg           = torch.tensor(deg_list, dtype=torch.long) if deg_list is not None else None
 
-    if encoder_type == "gnn":
+    if encoder_type == "fsmol_gnn":
+        from featurize import FSMOL_NODE_FEAT_DIM
+        encoder = FSMolGNNEncoder(
+            node_feat_dim=FSMOL_NODE_FEAT_DIM,
+            hidden_channels=config.get("hidden_channels", 128),
+            num_layers=config.get("num_layers", 10),
+            embedding_dim=embedding_dim,
+            deg=deg,
+        )
+    elif encoder_type == "gnn":
         from featurize import NODE_FEAT_DIM, EDGE_FEAT_DIM
-        deg_list = config.get("deg", None)
-        deg = torch.tensor(deg_list, dtype=torch.long) if deg_list is not None else None
         encoder = PNAGNNEncoder(
             node_feat_dim=NODE_FEAT_DIM,
             edge_feat_dim=EDGE_FEAT_DIM,
@@ -289,7 +395,8 @@ def _load_model_from_checkpoint(
         val_metric = checkpoint.get("val_rmse", checkpoint.get("val_loss", None))
         val_str    = f"RMSE={val_metric:.4f}" if val_metric is not None else "?"
     enc_type = config.get("encoder_type", "ecfp")
-    print(f"Loaded {enc_type}/{model_type} model from epoch {checkpoint['epoch']} (Val {val_str})")
+    epoch_num = checkpoint.get("epoch", checkpoint.get("step", "?"))
+    print(f"Loaded {enc_type}/{model_type} model from epoch {epoch_num} (Val {val_str})")
     return model, config
 
 
@@ -336,7 +443,9 @@ def evaluate_inside_task_ood(
         assay_id | n_scaffold_groups | n_molecules | spearman | rmse | mae | delta_auprc
     """
     model.eval()
-    is_classif = isinstance(_unwrap(model), PrototypicalNetworkClassification)
+    is_classif  = isinstance(_unwrap(model), PrototypicalNetworkClassification)
+    gnn         = _is_gnn(model)
+    fsmol       = _is_fsmol_gnn(model)
     rng  = np.random.RandomState(seed)
     rows = []
 
@@ -356,6 +465,9 @@ def evaluate_inside_task_ood(
                 n_skipped += 1
                 continue
 
+            # Encode all molecules in this assay once; slice per episode (no repeated GNN passes)
+            all_emb = _encode_assay(model, assay, device, gnn, fsmol)
+
             for _ in range(n_episodes_per_assay):
                 # Support: any scaffold group; query: only groups with ≥3 molecules
                 sup_key = groups[rng.randint(len(groups))]
@@ -371,16 +483,16 @@ def evaluate_inside_task_ood(
                 sup_idx = rng.choice(sup_pool, size=n_support, replace=len(sup_pool) < n_support)
                 qry_idx = np.array(qry_pool)
 
-                sup_fp  = _mol_input(assay, sup_idx, device, _is_gnn(model))
-                sup_lbl = torch.tensor(assay.labels[sup_idx]).to(device)
-                qry_fp  = _mol_input(assay, qry_idx, device, _is_gnn(model))
+                sup_lbl = torch.tensor(assay.labels[sup_idx], device=device)
                 qry_lbl = assay.labels[qry_idx]
-
-                preds    = model.forward(sup_fp, sup_lbl, qry_fp).cpu().numpy()
-                bin_lbl  = assay.binary_labels[qry_idx] if assay.binary_labels is not None else None
+                preds   = _unwrap(model).predict_from_embeddings(
+                    all_emb[sup_idx], sup_lbl, all_emb[qry_idx]
+                ).cpu().numpy()
+                bin_lbl = assay.binary_labels[qry_idx] if assay.binary_labels is not None else None
                 episode_metrics.append(_compute_metrics(preds, qry_lbl, bin_lbl, is_classif))
 
-            mean_m = {k: float(np.nanmean([m[k] for m in episode_metrics])) for k in episode_metrics[0]}
+            with np.errstate(all='ignore'):
+                mean_m = {k: float(np.nanmean([m[k] for m in episode_metrics])) for k in episode_metrics[0]}
             rows.append({
                 "assay_id":          assay.assay_id,
                 "n_scaffold_groups": len(groups),
@@ -401,6 +513,25 @@ def evaluate_inside_task_ood(
 # FS-MOL TEST EVALUATION  —  3-curve line plot (Fig 2a / Fig 2b)
 # =============================================================================
 
+def _encode_assay(
+    model, assay: AssayDataset, device: torch.device, gnn: bool, fsmol: bool
+) -> torch.Tensor:
+    """Pre-encode every molecule in an assay. Returns (n, emb_dim) on device.
+    Call once per assay; slice embeddings per episode — eliminates repeated GNN passes."""
+    from data import _build_fsmol_graphs_for_assay, _build_graphs_for_assay
+    m = _unwrap(model)
+    with torch.no_grad():
+        if gnn:
+            from torch_geometric.data import Batch as PyGBatch
+            graphs = (_build_fsmol_graphs_for_assay(assay) if fsmol
+                      else _build_graphs_for_assay(assay))
+            batch = PyGBatch.from_data_list(graphs).to(device)
+            return m.encoder(batch)   # (n, emb_dim)
+        else:
+            fp = torch.tensor(np.stack(assay.fingerprints), dtype=torch.float32).to(device)
+            return m.encoder(fp)      # (n, emb_dim)
+
+
 def _get_mol_sizes(assay: AssayDataset) -> np.ndarray:
     """
     Heavy atom count per molecule.
@@ -416,7 +547,7 @@ def _get_mol_sizes(assay: AssayDataset) -> np.ndarray:
 
 def evaluate_fsmol_test(
     model: torch.nn.Module,
-    test_assay_files: list[str],
+    test_assays,
     device: torch.device,
     support_sizes: list[int] = [16, 32, 128, 256],
     n_repeats: int = 5,
@@ -445,27 +576,31 @@ def evaluate_fsmol_test(
     MIN_TASK_SIZE=32 is applied consistently: assays with fewer exact-measurement
     molecules are skipped regardless of support_size.
     """
-    from data import _load_assay_file
-
     MIN_TASK_SIZE = 32   # must match main.py — skip assays too small after exact-filtering
     min_grp = max(2, min(support_sizes) // 4)  # scaffold split: min molecules per group
 
     model.eval()
     is_classif = isinstance(_unwrap(model), PrototypicalNetworkClassification)
+    gnn        = _is_gnn(model)
+    fsmol      = _is_fsmol_gnn(model)
     rng       = np.random.RandomState(seed)
     rows:      list[dict] = []
     pred_rows: list[dict] = []
     save_preds = save_preds_path is not None
 
-    for file_idx, fpath in enumerate(test_assay_files):
-        assay   = _load_assay_file(fpath)
+    for file_idx, assay in enumerate(test_assays):
         n_total = len(assay)
 
         # Fix 3: apply MIN_TASK_SIZE consistently across all support sizes
         if n_total < MIN_TASK_SIZE:
             continue
 
-        # Pre-compute per-assay structures for non-random splits (done once per assay)
+        # Encode every molecule in this assay once; slice embeddings per episode.
+        # Eliminates repeated GNN passes: 1 forward pass per assay instead of
+        # len(support_sizes) × n_repeats × 2 (support + query).
+        all_emb = _encode_assay(model, assay, device, gnn, fsmol)
+
+        # Pre-compute per-assay structures for non-random splits
         usable_groups: list[str] = []
         small_pool = large_pool = np.array([], dtype=np.int64)
 
@@ -512,22 +647,18 @@ def evaluate_fsmol_test(
                                          replace=len(sup_pool) < n_sup)
 
                 elif split_type == "size":
-                    # Support: n_sup from small pool (replace only if pool too small)
-                    # Query:   all large molecules (fixed across repeats)
                     sup_idx = rng.choice(small_pool, size=n_sup,
                                          replace=len(small_pool) < n_sup)
-                    qry_idx = large_pool.copy()
+                    qry_idx = large_pool
 
-                # ── Forward pass ─────────────────────────────────────────────
-                sup_fp  = _mol_input(assay, sup_idx, device, _is_gnn(model))
-                sup_lbl = torch.tensor(assay.labels[sup_idx]).to(device)
-                qry_fp  = _mol_input(assay, qry_idx, device, _is_gnn(model))
+                # ── Predict via pre-encoded embeddings (no GNN re-pass) ──────
+                sup_lbl = torch.tensor(assay.labels[sup_idx], device=device)
                 qry_lbl = assay.labels[qry_idx]
                 bin_lbl = (assay.binary_labels[qry_idx]
                            if assay.binary_labels is not None else None)
-
-                with torch.no_grad():
-                    preds = model.forward(sup_fp, sup_lbl, qry_fp).cpu().numpy()
+                preds = _unwrap(model).predict_from_embeddings(
+                    all_emb[sup_idx], sup_lbl, all_emb[qry_idx]
+                ).cpu().numpy()
 
                 repeat_metrics.append(_compute_metrics(preds, qry_lbl, bin_lbl, is_classif))
                 last_qry_idx = qry_idx
@@ -548,8 +679,9 @@ def evaluate_fsmol_test(
             if not repeat_metrics:
                 continue
 
-            mean_m = {k: float(np.nanmean([m[k] for m in repeat_metrics]))
-                      for k in repeat_metrics[0]}
+            with np.errstate(all='ignore'):  # suppress nanmean-of-all-NaN warning
+                mean_m = {k: float(np.nanmean([m[k] for m in repeat_metrics]))
+                          for k in repeat_metrics[0]}
             rows.append({
                 "assay_id":     assay.assay_id,
                 "split_type":   split_type,
@@ -560,7 +692,7 @@ def evaluate_fsmol_test(
             })
 
         if (file_idx + 1) % 20 == 0:
-            print(f"  [{split_type}] {file_idx + 1}/{len(test_assay_files)} assays...",
+            print(f"  [{split_type}] {file_idx + 1}/{len(test_assays)} assays...",
                   end="\r")
 
     df = pd.DataFrame(rows)
