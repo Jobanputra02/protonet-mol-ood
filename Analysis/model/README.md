@@ -75,7 +75,7 @@ Two training regimes across the 4 runs. Critical context for interpreting result
 |---|---|---|---|---|---|
 | 0.067 | 0.085 | 0.107 | 0.114 | 0.171 | 0.107 |
 
-**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.038 across 153 assays.
+**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.041 across 153 assays.
 
 #### DrugOOD — ΔAUPRC (IC50)
 
@@ -253,10 +253,11 @@ Two training regimes across the 4 runs. Critical context for interpreting result
 **Figure 2(a) — ΔAUPRC vs support size:**
 ![FS-Mol line plot](../../outputs/figures/fig2a_fsmol_line_plot_fsmol_gnn_classification_shift_aware.png)
 
+**Figure 2(b) — Per-assay ΔAUPRC distribution:**
+![FS-Mol boxplot](../../outputs/figures/fig2b_fsmol_boxplot_fsmol_gnn_classification_shift_aware.png)
+
 **Figure 3 — DrugOOD ΔAUPRC vs context size:**
 ![DrugOOD line plot](../../outputs/figures/fig3_drugood_line_plot_fsmol_gnn_classification_shift_aware.png)
-
-> Per-assay distribution (fig2b) not available locally — evaluation CSVs for this run are server-side. Sync `fsmol_test_predictions_fsmol_gnn_classification_shift_aware_*.csv` from the server to generate it.
 
 ---
 

@@ -113,8 +113,8 @@ Inside-task OOD: support and query from different scaffold groups within the sam
 
 | Model | Encoder | Inside-task ΔAUPRC | DrugOOD assay | DrugOOD scaffold | DrugOOD size |
 |---|---|---|---|---|---|
-| Regression | ECFP | 0.038 | 0.008 | 0.001 | 0.016 |
-| Classification | ECFP | — | 0.021 | 0.019 | 0.021 |
+| Regression | ECFP | 0.041 | 0.008 | 0.000 | 0.016 |
+| Classification | ECFP | 0.023 | 0.021 | 0.019 | 0.021 |
 | Classification | PNA-GNN 6L | 0.024 | 0.037 | 0.027 | 0.046 |
 | Classification | FS-Mol GNN 10L | 0.034 | 0.042 | 0.031 | 0.029 |
 
