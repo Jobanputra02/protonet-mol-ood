@@ -27,8 +27,10 @@ from rdkit import Chem                          # type: ignore
 from rdkit.Chem.Scaffolds import MurckoScaffold # type: ignore
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from config import FSMOL_DIR, FIGURES_DIR, RESULTS_DIR
+from config import FSMOL_DIR, DATA_ANALYSIS_FIGURES_DIR, DATA_ANALYSIS_RESULTS_DIR
 
+FIGURES_DIR = DATA_ANALYSIS_FIGURES_DIR
+RESULTS_DIR = DATA_ANALYSIS_RESULTS_DIR
 os.makedirs(FIGURES_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 

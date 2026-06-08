@@ -46,3 +46,8 @@ PTN_FSMOL_GNN_CLASSIFICATION_RANDOM_CHECKPOINT = os.path.join(CHECKPOINT_DIR, "p
 OUTPUT_DIR  = os.path.join(REPO_ROOT, "outputs")
 FIGURES_DIR = os.path.join(OUTPUT_DIR, "figures")
 RESULTS_DIR = os.path.join(OUTPUT_DIR, "results")
+
+# Per-run subdirectories — one folder per (encoder, head, split) combination.
+# Use these instead of RESULTS_DIR / FIGURES_DIR when writing run-specific files.
+DATA_ANALYSIS_RESULTS_DIR = os.path.join(RESULTS_DIR, "data_analysis")
+DATA_ANALYSIS_FIGURES_DIR = os.path.join(FIGURES_DIR, "data_analysis")

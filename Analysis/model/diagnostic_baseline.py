@@ -43,10 +43,11 @@ from sklearn.kernel_ridge import KernelRidge
 _REPO_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
 sys.path.insert(0, _REPO_ROOT)
 
-from config import FSMOL_TRAIN, FSMOL_TEST, PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT, RESULTS_DIR
+from config import FSMOL_TRAIN, FSMOL_TEST, PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT, DATA_ANALYSIS_RESULTS_DIR
 from data import _load_assay_file, EpisodeSampler
 from model import PrototypicalNetworkRegression, ECFPEncoder
 
+RESULTS_DIR = DATA_ANALYSIS_RESULTS_DIR
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # Train-mode constants

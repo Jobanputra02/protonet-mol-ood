@@ -29,8 +29,6 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import FIGURES_DIR, RESULTS_DIR
 
-os.makedirs(FIGURES_DIR, exist_ok=True)
-
 # ---------------------------------------------------------------------------
 # Parse run tag from CLI
 # ---------------------------------------------------------------------------
@@ -49,8 +47,12 @@ RUN_TAG = _args.run_tag or f"{_args.encoder}_{_args.head}_{_args.split}"
 _parts  = RUN_TAG.split("_", 2)
 RUN_LABEL = f"{_parts[0].upper()} | {'_'.join(_parts[1:])}" if len(_parts) >= 2 else RUN_TAG
 
-FSMOL_CSV   = os.path.join(RESULTS_DIR, f"fsmol_test_results_{RUN_TAG}.csv")
-DRUGOOD_CSV = os.path.join(RESULTS_DIR, f"drugood_results_{RUN_TAG}.csv")
+RUN_RESULTS_DIR = os.path.join(RESULTS_DIR, RUN_TAG)
+RUN_FIGURES_DIR = os.path.join(FIGURES_DIR, RUN_TAG)
+os.makedirs(RUN_FIGURES_DIR, exist_ok=True)
+
+FSMOL_CSV   = os.path.join(RUN_RESULTS_DIR, "fsmol_test_results.csv")
+DRUGOOD_CSV = os.path.join(RUN_RESULTS_DIR, "drugood_results.csv")
 
 
 # =============================================================================
@@ -108,7 +110,7 @@ def plot_fsmol_line(df: pd.DataFrame) -> None:
     plt.suptitle(f"FS-Mol Test Evaluation — Prototypical Network ({RUN_LABEL})",
                  fontsize=13, y=1.02)
     plt.tight_layout()
-    out = os.path.join(FIGURES_DIR, f"fig2a_fsmol_line_plot_{RUN_TAG}.png")
+    out = os.path.join(RUN_FIGURES_DIR, "fig2a_fsmol_line_plot.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved -> {out}")
@@ -188,7 +190,7 @@ def plot_fsmol_boxplot(df: pd.DataFrame) -> None:
 
     plt.suptitle(f"FS-Mol Test: Per-Assay Distribution ({RUN_LABEL})", fontsize=13, y=1.02)
     plt.tight_layout()
-    out = os.path.join(FIGURES_DIR, f"fig2b_fsmol_boxplot_{RUN_TAG}.png")
+    out = os.path.join(RUN_FIGURES_DIR, "fig2b_fsmol_boxplot.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved -> {out}")
@@ -245,7 +247,7 @@ def plot_drugood_line(df: pd.DataFrame) -> None:
     plt.suptitle(f"DrugOOD Evaluation — Prototypical Network ({RUN_LABEL})",
                  fontsize=13, y=1.02 if n_rows == 1 else 1.01)
     plt.tight_layout()
-    out = os.path.join(FIGURES_DIR, f"fig3_drugood_line_plot_{RUN_TAG}.png")
+    out = os.path.join(RUN_FIGURES_DIR, "fig3_drugood_line_plot.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"Saved -> {out}")

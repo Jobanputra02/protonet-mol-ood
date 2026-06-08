@@ -15,7 +15,7 @@ from typing import Optional
 import numpy as np
 import torch
 from config import (FSMOL_TRAIN, FSMOL_VAL, FSMOL_TEST,
-                    DRUGOOD_DIR, CHECKPOINT_DIR, RESULTS_DIR,
+                    DRUGOOD_DIR, CHECKPOINT_DIR, RESULTS_DIR, FIGURES_DIR,
                     PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT,
                     PTN_ECFP_REGRESSION_RANDOM_CHECKPOINT,
                     PTN_ECFP_CLASSIFICATION_SHIFT_CHECKPOINT,
@@ -362,8 +362,11 @@ if __name__ == "__main__":
     # configurations in the same RESULTS_DIR without overwriting each other.
     run_tag = f"{ENCODER}_{MODEL_HEAD}_{TRAINING_SPLIT}"
 
+    run_results_dir = os.path.join(RESULTS_DIR, run_tag)
+    run_figures_dir = os.path.join(FIGURES_DIR, run_tag)
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    os.makedirs(run_results_dir, exist_ok=True)
+    os.makedirs(run_figures_dir, exist_ok=True)
 
 
     def ram_gb() -> float:
@@ -446,7 +449,7 @@ if __name__ == "__main__":
             tasks_per_batch=16,          # FS-Mol paper: 16 tasks accumulated per optimizer step
             n_support=64,                # FS-Mol paper training episode size
             n_query=256,                 # FS-Mol paper training episode size
-            n_episodes_train=1000,       # episodes per epoch (~62 optimizer steps/epoch)
+            n_episodes_train=1600,       # episodes per epoch (100 optimizer steps/epoch × 100 epochs = 10,000 steps)
             n_episodes_val=200,          # ~5 per val assay × 40 val assays
             lr=lr,
             save_path=save_path,
@@ -490,7 +493,7 @@ if __name__ == "__main__":
         eval_datasets,
         context_sizes=[16, 32, 64, 128, 256, 512],
     )
-    drugood_path = os.path.join(RESULTS_DIR, f"drugood_results_{run_tag}.csv")
+    drugood_path = os.path.join(run_results_dir, "drugood_results.csv")
     drugood_df.to_csv(drugood_path, index=False)
     print(f"  Saved => {drugood_path}")
     print("\n=== DrugOOD results (long-form) ===")
@@ -514,7 +517,7 @@ if __name__ == "__main__":
         model, test_assays, device,
         n_support=16, n_episodes_per_assay=10,
     )
-    inside_task_path = os.path.join(RESULTS_DIR, f"inside_task_ood_{run_tag}.csv")
+    inside_task_path = os.path.join(run_results_dir, "inside_task_ood.csv")
     inside_task_df.to_csv(inside_task_path, index=False)
     print(f"  Saved => {inside_task_path}")
 
@@ -523,7 +526,7 @@ if __name__ == "__main__":
     fsmol_dfs = []
     for stype in ["random", "scaffold", "size"]:
         print(f"\n  -- split_type = {stype} --")
-        preds_path = os.path.join(RESULTS_DIR, f"fsmol_test_predictions_{run_tag}_{stype}.csv")
+        preds_path = os.path.join(run_results_dir, f"fsmol_test_predictions_{stype}.csv")
         df = evaluate_fsmol_test(
             model, test_assays, device,
             support_sizes=[16, 32, 64, 128, 256, 512],
@@ -534,7 +537,7 @@ if __name__ == "__main__":
         fsmol_dfs.append(df)
 
     fsmol_test_df = pd.concat(fsmol_dfs, ignore_index=True)
-    fsmol_test_path = os.path.join(RESULTS_DIR, f"fsmol_test_results_{run_tag}.csv")
+    fsmol_test_path = os.path.join(run_results_dir, "fsmol_test_results.csv")
     fsmol_test_df.to_csv(fsmol_test_path, index=False)
     print(f"\n  All 3 curves saved => {fsmol_test_path}")
 

@@ -279,7 +279,12 @@ def evaluate_drugood_multiscale(
                             ctx_batch = PyGBatch.from_data_list(
                                 [ctx_graphs_cache[i] for i in idx]
                             ).to(device)
-                            ctx_lbl = eval_dataset.context_labels[idx].to(device)
+                            if is_classif and eval_dataset.context_binary is not None:
+                                ctx_lbl = torch.tensor(
+                                    eval_dataset.context_binary[idx].astype(np.float32),
+                                    device=device)
+                            else:
+                                ctx_lbl = eval_dataset.context_labels[idx].to(device)
                             ctx_emb = _unwrap(model).encoder(ctx_batch)
                             preds   = _unwrap(model).predict_from_embeddings(
                                 ctx_emb, ctx_lbl, pre_qry_emb
@@ -287,7 +292,8 @@ def evaluate_drugood_multiscale(
                             preds_np = preds.cpu().numpy()
                         else:
                             ctx_fp, ctx_labels, test_fp, test_labels, test_binary = \
-                                eval_dataset.get_episode(context_size, query_set, seed)
+                                eval_dataset.get_episode(context_size, query_set, seed,
+                                                         use_binary=is_classif)
                             if len(test_fp) == 0:
                                 continue
                             ctx_lbl    = ctx_labels.to(device)
@@ -483,7 +489,11 @@ def evaluate_inside_task_ood(
                 sup_idx = rng.choice(sup_pool, size=n_support, replace=len(sup_pool) < n_support)
                 qry_idx = np.array(qry_pool)
 
-                sup_lbl = torch.tensor(assay.labels[sup_idx], device=device)
+                if is_classif and assay.binary_labels is not None:
+                    sup_lbl = torch.tensor(
+                        assay.binary_labels[sup_idx].astype(np.float32), device=device)
+                else:
+                    sup_lbl = torch.tensor(assay.labels[sup_idx], device=device)
                 qry_lbl = assay.labels[qry_idx]
                 preds   = _unwrap(model).predict_from_embeddings(
                     all_emb[sup_idx], sup_lbl, all_emb[qry_idx]
@@ -652,7 +662,11 @@ def evaluate_fsmol_test(
                     qry_idx = large_pool
 
                 # ── Predict via pre-encoded embeddings (no GNN re-pass) ──────
-                sup_lbl = torch.tensor(assay.labels[sup_idx], device=device)
+                if is_classif and assay.binary_labels is not None:
+                    sup_lbl = torch.tensor(
+                        assay.binary_labels[sup_idx].astype(np.float32), device=device)
+                else:
+                    sup_lbl = torch.tensor(assay.labels[sup_idx], device=device)
                 qry_lbl = assay.labels[qry_idx]
                 bin_lbl = (assay.binary_labels[qry_idx]
                            if assay.binary_labels is not None else None)

@@ -68,7 +68,8 @@ def _worker_init_fn(worker_id: int) -> None:
 
 def _make_loaders(encoder, train_files, val_files,
                   n_episodes_train, n_episodes_val,
-                  n_support, n_query, shift_aware):
+                  n_support, n_query, shift_aware,
+                  use_binary_labels: bool = False):
     """Return (train_loader, val_loader)."""
     is_fsmol_gnn = isinstance(encoder, FSMolGNNEncoder)
     is_gnn       = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
@@ -82,11 +83,11 @@ def _make_loaders(encoder, train_files, val_files,
 
     train_dataset = DatasetCls(
         train_files, n_episodes_train, n_support, n_query,
-        shift_aware=shift_aware, **gnn_kwargs,
+        shift_aware=shift_aware, use_binary_labels=use_binary_labels, **gnn_kwargs,
     )
     val_dataset = DatasetCls(
         val_files, n_episodes_val, n_support, n_query,
-        shift_aware=False, **gnn_kwargs,
+        shift_aware=False, use_binary_labels=use_binary_labels, **gnn_kwargs,
     )
 
     train_loader = DataLoader(
@@ -143,6 +144,7 @@ def pretrain_classification(
         encoder, train_assays, val_assays,
         n_episodes_train, n_episodes_val,
         n_support, n_query, shift_aware,
+        use_binary_labels=True,   # classification always trains with pre-binarised ChEMBL labels
     )
 
     model     = PrototypicalNetworkClassification(encoder).to(device)

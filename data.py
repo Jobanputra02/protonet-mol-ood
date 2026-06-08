@@ -176,27 +176,29 @@ class EpisodeSampler:
         self.n_support = n_support
         self.n_query = n_query
 
-    def sample_episode(self, dataset: AssayDataset, shift_aware: bool = True):
+    def sample_episode(self, dataset: AssayDataset, shift_aware: bool = True,
+                       use_binary: bool = False):
         """
         Sample one episode from a dataset.
 
         Args:
             dataset:     AssayDataset to sample from
             shift_aware: If True, try to split support/query by scaffold family.
-                         Falls back to random if not enough scaffold diversity.
+            use_binary:  If True and dataset.binary_labels is not None, return
+                         pre-binarised (0/1) labels instead of continuous labels.
 
         Returns:
             support_fp:     (n_support, 2048) float tensor
-            support_labels: (n_support,) float tensor
+            support_labels: (n_support,) float tensor  — binary if use_binary=True
             query_fp:       (n_query, 2048) float tensor
-            query_labels:   (n_query,) float tensor
+            query_labels:   (n_query,) float tensor    — binary if use_binary=True
         """
         if shift_aware and len(dataset.scaffold_groups) >= 2:
-            return self._sample_shift_aware_episode(dataset)
+            return self._sample_shift_aware_episode(dataset, use_binary=use_binary)
         else:
-            return self._sample_random_episode(dataset)
+            return self._sample_random_episode(dataset, use_binary=use_binary)
 
-    def _sample_shift_aware_episode(self, dataset: AssayDataset):
+    def _sample_shift_aware_episode(self, dataset: AssayDataset, use_binary: bool = False):
         """
         Support and query come from DIFFERENT scaffold families.
         Uses whatever molecules are available — no replacement, capped to pool size.
@@ -206,7 +208,7 @@ class EpisodeSampler:
         usable_keys = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
 
         if len(usable_keys) < 2:
-            return self._sample_random_episode(dataset)
+            return self._sample_random_episode(dataset, use_binary=use_binary)
 
         chosen = np.random.choice(len(usable_keys), size=2, replace=False)
         support_pool = dataset.scaffold_groups[usable_keys[chosen[0]]]
@@ -218,9 +220,9 @@ class EpisodeSampler:
         sup_idx = np.random.choice(support_pool, size=n_sup, replace=False)
         qry_idx = np.random.choice(query_pool,   size=n_qry, replace=False)
 
-        return self._indices_to_tensors(dataset, sup_idx, qry_idx)
+        return self._indices_to_tensors(dataset, sup_idx, qry_idx, use_binary=use_binary)
 
-    def _sample_random_episode(self, dataset: AssayDataset):
+    def _sample_random_episode(self, dataset: AssayDataset, use_binary: bool = False):
         """
         Support and query sampled randomly from the whole assay.
         Standard FS-Mol protocol. Used as fallback or for baseline comparison.
@@ -234,15 +236,21 @@ class EpisodeSampler:
         sup_idx = all_idx[:n_sup]
         qry_idx = all_idx[n_sup:n_sup + n_qry]
 
-        return self._indices_to_tensors(dataset, sup_idx, qry_idx)
+        return self._indices_to_tensors(dataset, sup_idx, qry_idx, use_binary=use_binary)
 
-    def _indices_to_tensors(self, dataset, sup_idx, qry_idx):
+    def _indices_to_tensors(self, dataset, sup_idx, qry_idx, use_binary: bool = False):
         # fingerprints is a list of 1D numpy arrays — stack only the rows we need.
         # Must use list comprehension (not array indexing) since fingerprints is a list.
-        support_fp     = torch.tensor(np.stack([dataset.fingerprints[i] for i in sup_idx]))
-        support_labels = torch.tensor(dataset.labels[sup_idx])
-        query_fp       = torch.tensor(np.stack([dataset.fingerprints[i] for i in qry_idx]))
-        query_labels   = torch.tensor(dataset.labels[qry_idx])
+        support_fp = torch.tensor(np.stack([dataset.fingerprints[i] for i in sup_idx]))
+        query_fp   = torch.tensor(np.stack([dataset.fingerprints[i] for i in qry_idx]))
+
+        if use_binary and dataset.binary_labels is not None:
+            support_labels = torch.tensor(dataset.binary_labels[sup_idx].astype(np.float32))
+            query_labels   = torch.tensor(dataset.binary_labels[qry_idx].astype(np.float32))
+        else:
+            support_labels = torch.tensor(dataset.labels[sup_idx])
+            query_labels   = torch.tensor(dataset.labels[qry_idx])
+
         return support_fp, support_labels, query_fp, query_labels
 
     # ------------------------------------------------------------------
@@ -368,16 +376,18 @@ class FSMolEpisodeDataset(Dataset):
         n_support: int = 16,
         n_query: int = 16,
         shift_aware: bool = True,
-        pool_size: int = 0,   # kept for API compatibility — ignored
+        pool_size: int = 0,           # kept for API compatibility — ignored
+        use_binary_labels: bool = False,
     ):
         if not assay_files:
             raise ValueError("No assay files provided.")
-        self.all_files   = assay_files
-        self.n_episodes  = n_episodes_per_epoch
-        self.n_support   = n_support
-        self.n_query     = n_query
-        self.sampler     = EpisodeSampler(n_support, n_query)
-        self.shift_aware = shift_aware
+        self.all_files         = assay_files
+        self.n_episodes        = n_episodes_per_epoch
+        self.n_support         = n_support
+        self.n_query           = n_query
+        self.sampler           = EpisodeSampler(n_support, n_query)
+        self.shift_aware       = shift_aware
+        self.use_binary_labels = use_binary_labels
         print(f"  Streaming ECFP dataset: {len(self.all_files)} training files, "
               f"min {n_support} molecules per assay")
 
@@ -392,7 +402,9 @@ class FSMolEpisodeDataset(Dataset):
             path = self.all_files[np.random.randint(len(self.all_files))]
             ds = _load_assay_file(path)
             if len(ds) >= self.n_support:
-                return self.sampler.sample_episode(ds, shift_aware=self.shift_aware)
+                return self.sampler.sample_episode(
+                    ds, shift_aware=self.shift_aware, use_binary=self.use_binary_labels
+                )
         raise RuntimeError("Could not find a valid assay after 200 attempts.")
 
 
@@ -502,18 +514,20 @@ class FSMolGraphEpisodeDataset(Dataset):
         n_support: int = 16,
         n_query: int = 16,
         shift_aware: bool = True,
-        pool_size: int = 0,   # kept for API compatibility — ignored
+        pool_size: int = 0,           # kept for API compatibility — ignored
         fsmol_style: bool = False,
+        use_binary_labels: bool = False,
     ):
         if not assay_files:
             raise ValueError("No assay files provided.")
-        self.all_files   = assay_files
-        self.n_episodes  = n_episodes_per_epoch
-        self.n_support   = n_support
-        self.n_query     = n_query
-        self.sampler     = EpisodeSampler(n_support, n_query)
-        self.shift_aware = shift_aware
-        self.fsmol_style = fsmol_style
+        self.all_files         = assay_files
+        self.n_episodes        = n_episodes_per_epoch
+        self.n_support         = n_support
+        self.n_query           = n_query
+        self.sampler           = EpisodeSampler(n_support, n_query)
+        self.shift_aware       = shift_aware
+        self.fsmol_style       = fsmol_style
+        self.use_binary_labels = use_binary_labels
         self._setup_graph_builder()
         print(f"  Streaming GNN dataset: {len(self.all_files)} training files, "
               f"min {n_support} molecules per assay")
@@ -563,8 +577,12 @@ class FSMolGraphEpisodeDataset(Dataset):
                 sup_idx, qry_idx = self.sampler._get_episode_indices_random(ds)
             sup_graphs = self._build_graphs([ds.scaffolds[i] for i in sup_idx])
             qry_graphs = self._build_graphs([ds.scaffolds[i] for i in qry_idx])
-            sup_labels = torch.tensor(ds.labels[sup_idx])
-            qry_labels = torch.tensor(ds.labels[qry_idx])
+            if self.use_binary_labels and ds.binary_labels is not None:
+                sup_labels = torch.tensor(ds.binary_labels[sup_idx].astype(np.float32))
+                qry_labels = torch.tensor(ds.binary_labels[qry_idx].astype(np.float32))
+            else:
+                sup_labels = torch.tensor(ds.labels[sup_idx])
+                qry_labels = torch.tensor(ds.labels[qry_idx])
             return sup_graphs, sup_labels, qry_graphs, qry_labels
         raise RuntimeError("Could not find a valid assay after 200 attempts.")
 
@@ -628,6 +646,7 @@ class DrugOODEvalDataset:
         context_size: int = 64,
         query_set: str = "ood_test",
         seed: int = 42,
+        use_binary: bool = False,
     ):
         """
         Sample context_size molecules from the train pool and return the chosen query set.
@@ -636,6 +655,8 @@ class DrugOODEvalDataset:
             context_size: How many context molecules to sample (64 / 128 / 256 / 512)
             query_set:    "ood_test" or "iid_test"
             seed:         Fixed seed for reproducibility across context sizes
+            use_binary:   If True and context_binary is not None, return binary (0/1)
+                          context labels instead of continuous ones.
 
         Returns:
             ctx_fp, ctx_labels, test_fp, test_labels, test_binary_labels
@@ -644,8 +665,11 @@ class DrugOODEvalDataset:
         n_ctx = min(context_size, len(self.context_fp))
         idx   = rng.choice(len(self.context_fp), size=n_ctx, replace=False)
 
-        ctx_fp     = self.context_fp[idx]
-        ctx_labels = self.context_labels[idx]
+        ctx_fp = self.context_fp[idx]
+        if use_binary and self.context_binary is not None:
+            ctx_labels = torch.tensor(self.context_binary[idx].astype(np.float32))
+        else:
+            ctx_labels = self.context_labels[idx]
 
         if query_set == "ood_test":
             return ctx_fp, ctx_labels, self.ood_test_fp, self.ood_test_labels, self.ood_test_binary

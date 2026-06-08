@@ -349,7 +349,7 @@ class PrototypicalNetworkClassification(nn.Module):
     Matches the FS-Mol paper (Schwartz et al., 2022) evaluation protocol.
 
     Per episode:
-      1. Binarise support labels: active = label > median(support_labels)
+      1. Binarise support labels: active = label > 0.5  (labels must be pre-binarised 0/1)
       2. proto_active   = mean(encoder(x_i) for active support molecules)
          proto_inactive = mean(encoder(x_i) for inactive support molecules)
       3. logits_q = [-d(f(x_q), proto_active), -d(f(x_q), proto_inactive)]
@@ -370,7 +370,7 @@ class PrototypicalNetworkClassification(nn.Module):
         """
         Args:
             support_input:  Tensor(n_sup, D) or PyG Batch(n_sup graphs)
-            support_labels: Tensor(n_sup,) — continuous, binarised internally via support median
+            support_labels: Tensor(n_sup,) — binary (0/1); threshold at 0.5
             query_input:    Tensor(n_qry, D) or PyG Batch(n_qry graphs)
         Returns:
             p_active: Tensor(n_qry,) — P(active) for each query molecule
@@ -378,8 +378,7 @@ class PrototypicalNetworkClassification(nn.Module):
         sup_emb = self.encoder(support_input)
         qry_emb = self.encoder(query_input)
 
-        threshold   = support_labels.median()
-        active_mask = support_labels > threshold
+        active_mask = support_labels > 0.5
 
         if not active_mask.any() or not (~active_mask).any():
             return torch.full((qry_emb.shape[0],), 0.5, device=qry_emb.device)
@@ -410,9 +409,8 @@ class PrototypicalNetworkClassification(nn.Module):
         sup_emb = _encode_many(self.encoder, support_input, B, n_sup)
         qry_emb = _encode_many(self.encoder, query_input,   B, n_qry)
 
-        # Binarise per episode using support median
-        thresholds  = support_labels.median(dim=1).values  # (B,)
-        active_mask = support_labels > thresholds.unsqueeze(1)  # (B, n_support) bool
+        # Binarise: support_labels are pre-binarised (0/1) — threshold at 0.5
+        active_mask = support_labels > 0.5  # (B, n_support) bool
 
         act_count   = active_mask.float().sum(dim=1)    # (B,)
         inact_count = (~active_mask).float().sum(dim=1) # (B,)
@@ -447,8 +445,7 @@ class PrototypicalNetworkClassification(nn.Module):
         self, sup_emb: torch.Tensor, sup_labels: torch.Tensor, qry_emb: torch.Tensor
     ) -> torch.Tensor:
         """Predict given pre-computed embeddings — avoids re-encoding support each query chunk."""
-        threshold   = sup_labels.median()
-        active_mask = sup_labels > threshold
+        active_mask = sup_labels > 0.5   # sup_labels must be binary (0/1)
         if not active_mask.any() or not (~active_mask).any():
             return torch.full((qry_emb.shape[0],), 0.5, device=qry_emb.device)
         proto_active   = sup_emb[active_mask].mean(dim=0)
@@ -483,9 +480,8 @@ class PrototypicalNetworkClassification(nn.Module):
             support_input, support_labels, query_input
         )
 
-        # Binarise query using same support-median threshold
-        thresholds   = support_labels.median(dim=1).values  # (B,)
-        binary_query = (query_labels > thresholds.unsqueeze(1)).float()  # (B, n_query)
+        # query_labels are pre-binarised (0/1) — threshold at 0.5
+        binary_query = (query_labels > 0.5).float()  # (B, n_query)
 
         if not valid_mask.any():
             return torch.tensor(0.0, device=p_active.device, requires_grad=True), {"delta_auprc": float("nan")}
@@ -556,7 +552,7 @@ class FSMolGNNLayer(nn.Module):
         self.conv = PNAConv(
             in_channels=hidden_dim,
             out_channels=hidden_dim,
-            aggregators=["mean", "min", "max", "std"],
+            aggregators=["sum", "mean", "std", "max"],
             scalers=["identity", "amplification", "attenuation"],
             deg=deg,
             edge_dim=3,          # SINGLE / DOUBLE / TRIPLE one-hot
