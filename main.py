@@ -15,19 +15,7 @@ from typing import Optional
 import numpy as np
 import torch
 from config import (FSMOL_TRAIN, FSMOL_VAL, FSMOL_TEST,
-                    DRUGOOD_DIR, CHECKPOINT_DIR, RESULTS_DIR, FIGURES_DIR,
-                    PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT,
-                    PTN_ECFP_REGRESSION_RANDOM_CHECKPOINT,
-                    PTN_ECFP_CLASSIFICATION_SHIFT_CHECKPOINT,
-                    PTN_ECFP_CLASSIFICATION_RANDOM_CHECKPOINT,
-                    PTN_GNN_REGRESSION_SHIFT_CHECKPOINT,
-                    PTN_GNN_REGRESSION_RANDOM_CHECKPOINT,
-                    PTN_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
-                    PTN_GNN_CLASSIFICATION_RANDOM_CHECKPOINT,
-                    PTN_FSMOL_GNN_REGRESSION_SHIFT_CHECKPOINT,
-                    PTN_FSMOL_GNN_REGRESSION_RANDOM_CHECKPOINT,
-                    PTN_FSMOL_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
-                    PTN_FSMOL_GNN_CLASSIFICATION_RANDOM_CHECKPOINT)
+                    DRUGOOD_DIR, CHECKPOINT_DIR, RESULTS_DIR, FIGURES_DIR)
 from data import AssayDataset, DrugOODEvalDataset, get_scaffold
 from model import ECFPEncoder, PNAGNNEncoder, FSMolGNNEncoder
 from featurize import NODE_FEAT_DIM, EDGE_FEAT_DIM, compute_degree_histogram
@@ -331,24 +319,6 @@ if __name__ == "__main__":
     SEED           = 42               # fixed for reproducibility — change to run a different seed
     SKIP_TRAINING  = False             # True = load existing checkpoint, skip steps 1-2 pretraining
 
-    # Checkpoint paths are defined in config.py (one per model combination).
-    # Add a new entry there when introducing a new encoder, head, or split.
-    CHECKPOINT_MAP = {
-        ("ecfp",      "regression",     "shift_aware"): PTN_ECFP_REGRESSION_SHIFT_CHECKPOINT,
-        ("ecfp",      "regression",     "random"):      PTN_ECFP_REGRESSION_RANDOM_CHECKPOINT,
-        ("ecfp",      "classification", "shift_aware"): PTN_ECFP_CLASSIFICATION_SHIFT_CHECKPOINT,
-        ("ecfp",      "classification", "random"):      PTN_ECFP_CLASSIFICATION_RANDOM_CHECKPOINT,
-        ("gnn",       "regression",     "shift_aware"): PTN_GNN_REGRESSION_SHIFT_CHECKPOINT,
-        ("gnn",       "regression",     "random"):      PTN_GNN_REGRESSION_RANDOM_CHECKPOINT,
-        ("gnn",       "classification", "shift_aware"): PTN_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
-        ("gnn",       "classification", "random"):      PTN_GNN_CLASSIFICATION_RANDOM_CHECKPOINT,
-        ("fsmol_gnn", "regression",     "shift_aware"): PTN_FSMOL_GNN_REGRESSION_SHIFT_CHECKPOINT,
-        ("fsmol_gnn", "regression",     "random"):      PTN_FSMOL_GNN_REGRESSION_RANDOM_CHECKPOINT,
-        ("fsmol_gnn", "classification", "shift_aware"): PTN_FSMOL_GNN_CLASSIFICATION_SHIFT_CHECKPOINT,
-        ("fsmol_gnn", "classification", "random"):      PTN_FSMOL_GNN_CLASSIFICATION_RANDOM_CHECKPOINT,
-    }
-    save_path = CHECKPOINT_MAP[(ENCODER, MODEL_HEAD, TRAINING_SPLIT)]
-
     # Pretrain functions are named pretrain_{head} — import from train.py.
     PRETRAIN_FN_MAP = {
         "regression": pretrain_regression,
@@ -359,8 +329,9 @@ if __name__ == "__main__":
     shift_aware = (TRAINING_SPLIT == "shift_aware")
 
     # Unique tag for all output files from this run — keeps results from different
-    # configurations in the same RESULTS_DIR without overwriting each other.
-    run_tag = f"{ENCODER}_{MODEL_HEAD}_{TRAINING_SPLIT}"
+    # configurations and seeds in separate subdirectories.
+    run_tag   = f"{ENCODER}_{MODEL_HEAD}_{TRAINING_SPLIT}_seed{SEED}"
+    save_path = os.path.join(CHECKPOINT_DIR, f"ptn_{run_tag}.pt")
 
     run_results_dir = os.path.join(RESULTS_DIR, run_tag)
     run_figures_dir = os.path.join(FIGURES_DIR, run_tag)
@@ -383,7 +354,7 @@ if __name__ == "__main__":
 
     print("=" * 60)
     print(f"Prototypical Network: Molecular OOD")
-    print(f"  encoder={ENCODER}  head={MODEL_HEAD}  split={TRAINING_SPLIT}")
+    print(f"  encoder={ENCODER}  head={MODEL_HEAD}  split={TRAINING_SPLIT}  seed={SEED}")
     print(f"  run_tag => {run_tag}")
     print(f"  checkpoint => {save_path}")
     print("=" * 60)

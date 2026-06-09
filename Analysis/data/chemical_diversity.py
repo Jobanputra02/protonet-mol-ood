@@ -195,6 +195,8 @@ def run_tanimoto(fsmol_fps: np.ndarray, drugood_fps: np.ndarray, rng: np.random.
     ax.hist(dist_cross.flatten(), bins=80, alpha=0.6, label="FS-Mol vs DrugOOD", color="green",     density=True)
     for val, col in [(dist_fs.mean(), "steelblue"), (dist_do.mean(), "orange"), (dist_cross.mean(), "green")]:
         ax.axvline(val, color=col, linestyle="--", linewidth=1.5)
+    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    ax.set_axisbelow(True)
     ax.set_xlabel("Tanimoto Distance (1 − similarity)", fontsize=12)
     ax.set_ylabel("Density", fontsize=12)
     ax.set_title("Pairwise Tanimoto Distance Distributions", fontsize=13)

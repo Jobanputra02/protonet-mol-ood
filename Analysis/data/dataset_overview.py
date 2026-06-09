@@ -258,6 +258,8 @@ def plot_fig1a(fsmol_df: pd.DataFrame, drugood_assay_df: pd.DataFrame) -> None:
     ax.axhline(MIN_TASK_SIZE, color="gray", linestyle="--", linewidth=1,
                label=f"Min size = {MIN_TASK_SIZE}")
     ax.set_yscale("log")
+    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    ax.set_axisbelow(True)
     ax.set_xlabel("Assay index (sorted by size within split)", fontsize=11)
     ax.set_ylabel("Number of compounds (log scale)", fontsize=11)
     ax.set_title("FS-Mol: compounds per assay", fontsize=12)
@@ -274,6 +276,8 @@ def plot_fig1a(fsmol_df: pd.DataFrame, drugood_assay_df: pd.DataFrame) -> None:
                    label=f"IC50 {shift} ({len(sub):,} assays)")
         offset += len(sub)
     ax.set_yscale("log")
+    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    ax.set_axisbelow(True)
     ax.set_xlabel("Assay index (sorted by size within shift type)", fontsize=11)
     ax.set_ylabel("Number of compounds (log scale)", fontsize=11)
     ax.set_title("DrugOOD train: compounds per assay_id", fontsize=12)
@@ -298,6 +302,8 @@ def plot_fig1b(fsmol_df: pd.DataFrame, drugood_assay_df: pd.DataFrame) -> None:
                 color=split_colors[split], edgecolor="none",
                 label=f"{split} (n={len(sub):,})")
     ax.axvline(0.5, color="black", linestyle="--", linewidth=1, label="50% active")
+    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    ax.set_axisbelow(True)
     ax.set_xlabel("Fraction of active compounds per assay", fontsize=11)
     ax.set_ylabel("Density", fontsize=11)
     ax.set_title("FS-Mol: fraction active per assay", fontsize=12)
@@ -316,6 +322,8 @@ def plot_fig1b(fsmol_df: pd.DataFrame, drugood_assay_df: pd.DataFrame) -> None:
                 color=do_colors[shift], edgecolor="none",
                 label=f"IC50 {shift} (n={len(sub):,})")
     ax.axvline(0.5, color="black", linestyle="--", linewidth=1, label="50% active")
+    ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+    ax.set_axisbelow(True)
     ax.set_xlabel("Fraction of active compounds per assay_id", fontsize=11)
     ax.set_ylabel("Density", fontsize=11)
     ax.set_title("DrugOOD ood_test: fraction active per assay_id", fontsize=12)
@@ -339,6 +347,8 @@ def plot_fig1c(drugood_domain_df: pd.DataFrame) -> None:
             ax.bar(np.arange(len(s)), s["n_molecules"].values,
                    alpha=0.7, color=do_int_colors[int_split],
                    label=f"{int_split} ({len(s)} domains)")
+        ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+        ax.set_axisbelow(True)
         ax.set_xlabel("Domain index (sorted by size)", fontsize=10)
         ax.set_ylabel("Molecules per domain", fontsize=10)
         ax.set_title(f"DrugOOD IC50 {shift}: domain sizes", fontsize=11)
@@ -356,6 +366,8 @@ def plot_size_vs_fraction_exact(df: pd.DataFrame) -> None:
         sub = df[df.split == split]
         ax.scatter(sub["n_total"], sub["fraction_exact"],
                    alpha=0.3, s=3, color=split_colors[split], rasterized=True)
+        ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+        ax.set_axisbelow(True)
         ax.set_xlabel("Total molecules per assay", fontsize=10)
         ax.set_ylabel("Fraction exact (n_exact / n_total)", fontsize=10)
         ax.set_title(f"FS-Mol {split}: size vs fraction exact\n({len(sub):,} assays)", fontsize=11)

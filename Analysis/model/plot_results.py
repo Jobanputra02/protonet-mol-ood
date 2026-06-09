@@ -99,6 +99,8 @@ def plot_fsmol_line(df: pd.DataFrame) -> None:
             )
 
         ax.axhline(0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
+        ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+        ax.set_axisbelow(True)
         ax.set_xticks(sorted(df["support_size"].unique()))
         ax.set_xlabel("Support set size", fontsize=11)
         ax.set_ylabel(ylabel, fontsize=11)
@@ -172,6 +174,8 @@ def plot_fsmol_boxplot(df: pd.DataFrame) -> None:
             patch.set_alpha(0.6)
 
         ax.axhline(0, color="red", linestyle="--", linewidth=1, label="Random baseline")
+        ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+        ax.set_axisbelow(True)
 
         # x-tick labels at group centres
         centres = [si * (n_types + gap) + (n_types - 1) / 2 for si in range(len(support_sizes))]
@@ -237,6 +241,8 @@ def plot_drugood_line(df: pd.DataFrame) -> None:
                     label=qset.replace("_", " "),
                 )
             ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.7)
+            ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
+            ax.set_axisbelow(True)
             ax.set_xlabel("Context set size", fontsize=10)
             ax.set_ylabel(ylabel, fontsize=10)
             ax.set_title(f"{short_name} — {ylabel}", fontsize=11)
