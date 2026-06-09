@@ -40,17 +40,20 @@ python Analysis/model/diagnostic_baseline.py
 
 ## Completed Runs
 
-Three runs completed. A fourth (`fsmol_gnn_classification_random`) is pending.
+Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
 
-| Run | Encoder | Head | Training | Pool / Streaming |
+| Run | Encoder | Head | Episodes | Pool / Streaming |
 |---|---|---|---|---|
 | 1 | ECFP 2048-bit MLP | Regression | Shift-aware | Pool-based (~62 assays) |
 | 2 | ECFP 2048-bit MLP | Classification | Shift-aware | Pool-based (~62 assays) |
-| 3 | FS-Mol GNN 10L | Classification | Shift-aware | **Streaming (all 26,868 assays)** |
+| 3 | ECFP 2048-bit MLP | Classification | **Random** | **Streaming (all 26,868 assays)** |
+| 4 | FS-Mol GNN 10L | Classification | Shift-aware | **Streaming (all 26,868 assays)** |
 
-**Note on Runs 1–2 (pool-based):** These were trained on a fixed pool of ~62 assays. Fast to run and useful as ECFP baselines, but training diversity is severely limited compared to the paper.
+**Note on Runs 1–2 (pool-based):** Trained on a fixed pool of ~62 assays. Useful as legacy ECFP baselines but not comparable to streaming runs.
 
-**Note on Run 3 (streaming):** Trained on all FS-Mol training assays with binary ChEMBL labels, sum aggregator, and 10,000 gradient steps. This is the methodologically correct run and the primary comparison against the FS-Mol paper.
+**Note on Run 3 (streaming ECFP random):** First streaming ECFP run. IID (random) episodes matching the paper's training protocol but with an ECFP encoder. Reveals that the n=256 performance drop is an ECFP representation limit, not solely a scaffold-aware training artifact.
+
+**Note on Run 4 (streaming GNN shift-aware):** Primary comparison against the FS-Mol paper. All known implementation differences fixed (binary labels, sum aggregator, 10k steps).
 
 ---
 
@@ -161,7 +164,58 @@ Three runs completed. A fourth (`fsmol_gnn_classification_random`) is pending.
 
 ---
 
-### Run 3: FS-Mol GNN 10-Layer + Classification Head — Shift-Aware, Streaming
+### Run 3: ECFP + Classification Head — Random, Streaming
+
+> **Encoder:** ECFP4 2048-bit → 3-layer MLP → 256-dim  
+> **Training:** Streaming from all 26,868 FS-Mol train assays. lr=1e-3, BCE loss, 16 tasks/step, 10,000 gradient steps. Binary ChEMBL labels. **Random IID episodes** (paper-matching protocol).  
+> **Best checkpoint:** epoch 77, Val ΔAUPRC +0.1864  
+> **Evaluation:** 154 FS-Mol test assays
+
+#### FS-Mol Test — ΔAUPRC
+
+| Support size | Random | Scaffold | Size |
+|---|---|---|---|
+| 16 | 0.1271 | 0.0642 | 0.1114 |
+| 32 | 0.1441 | 0.0586 | 0.1264 |
+| 64 | 0.1628 | 0.0569 | 0.1377 |
+| 128 | **0.1872** | 0.0642 | 0.1361 |
+| 256 | 0.0866 | 0.0073 | 0.0380 |
+| 512 | 0.0738 | 0.0092 | 0.0477 |
+
+**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.014 across 153 assays.
+
+#### DrugOOD — ΔAUPRC (IC50)
+
+| Context size | Scaffold OOD | Scaffold IID | Size OOD | Size IID | Assay OOD | Assay IID |
+|---|---|---|---|---|---|---|
+| 16 | +0.0000 | +0.0000 | +0.0019 | +0.0021 | +0.0059 | +0.0053 |
+| 32 | +0.0010 | +0.0014 | −0.0022 | +0.0010 | +0.0037 | +0.0044 |
+| 64 | +0.0009 | −0.0001 | +0.0033 | +0.0002 | +0.0133 | +0.0126 |
+| 128 | +0.0180 | +0.0128 | +0.0151 | +0.0083 | +0.0252 | +0.0221 |
+| 256 | +0.0209 | +0.0140 | +0.0187 | +0.0099 | +0.0277 | +0.0249 |
+| 512 | +0.0220 | +0.0158 | +0.0183 | +0.0095 | +0.0268 | +0.0261 |
+| **Mean** | **0.0105** | **0.0073** | **0.0092** | **0.0052** | **0.0171** | **0.0159** |
+
+**Key observations:**
+- Streaming training dramatically improves over pool-based ECFP: n=16 jumps from 0.038 (Run 2) to 0.127, confirming training diversity is the dominant factor for ECFP.
+- **n=256 drop occurs even with random IID training** (0.187 → 0.087), refuting the hypothesis that scaffold-aware episodes alone cause the large-n degradation for ECFP. The drop appears to be an ECFP prototype capacity limit — fingerprint-based prototypes saturate or over-fit the support set at large n. The GNN random run will test whether this is encoder-specific.
+- Scaffold split collapse at n=256 (0.064 → 0.007) mirrors the GNN shift-aware run — consistent across training regimes.
+- DrugOOD is weaker than GNN (assay OOD 0.017 vs 0.036) despite similar FS-Mol random-split performance — cross-assay transfer benefits from GNN's structural features.
+
+#### Figures
+
+**Figure 2(a) — ΔAUPRC vs support size:**
+![FS-Mol line plot](../../outputs/figures/ecfp_classification_random/fig2a_fsmol_line_plot.png)
+
+**Figure 2(b) — Per-assay ΔAUPRC distribution:**
+![FS-Mol boxplot](../../outputs/figures/ecfp_classification_random/fig2b_fsmol_boxplot.png)
+
+**Figure 3 — DrugOOD ΔAUPRC vs context size:**
+![DrugOOD line plot](../../outputs/figures/ecfp_classification_random/fig3_drugood_line_plot.png)
+
+---
+
+### Run 4: FS-Mol GNN 10-Layer + Classification Head — Shift-Aware, Streaming
 
 > **Encoder:** 10-layer PNA GNN + CombinedReadout + ECFP + descriptor fusion → 512-dim (FS-Mol paper architecture)  
 > **Training:** Streaming from all 26,868 FS-Mol train assays. lr=1e-4, BCE loss, 16 tasks/step, 10,000 gradient steps. Binary ChEMBL labels. Sum aggregator.  
@@ -196,8 +250,8 @@ Three runs completed. A fourth (`fsmol_gnn_classification_random`) is pending.
 
 **Key observations:**
 - **At n=16, matches FS-Mol paper** (0.129 vs paper 0.126). **At n=128, exceeds paper** (0.222 vs 0.201). The label binarisation fix was the dominant factor — the old run achieved only 0.028 at n=16.
-- Performance peaks at n=128 then drops to 0.151 at n=256 (paper continues to 0.226). This is the scaffold-aware training effect: large support sets become scaffold-specific prototypes that don't transfer well to mixed random-split queries. The pending random baseline run will confirm this.
-- **Scaffold split collapse at large n** (0.050 → 0.006 from n=16 to n=512) is the core thesis finding — scaffold OOD uniquely breaks prototypical networks as support size grows, unlike assay/size OOD.
+- Performance peaks at n=128 then drops to 0.151 at n=256 (paper continues to 0.226). Run 3 (ECFP random) shows the n=256 drop also occurs with IID training for ECFP, so the GNN random run is needed to isolate whether scaffold-aware episodes cause the GNN's n=256 drop specifically.
+- **Scaffold split collapse at large n** (0.050 → 0.006 from n=16 to n=512) is the core thesis finding — scaffold OOD uniquely breaks prototypical networks as support size grows, and this holds across all runs regardless of episode type.
 - Size split shows intermediate behaviour, peaking at n=128 (0.144) then declining — partially affected by the same scaffold-specialisation effect.
 - DrugOOD assay OOD is best among all runs (0.036 mean) — full training distribution teaches cross-assay transfer.
 

@@ -7,9 +7,11 @@ Epoch-based training with gradient accumulation matching the FS-Mol paper protoc
   - Streams from ALL training files — no pool size limit
   - Constant LR (FS-Mol paper default; no scheduler)
 
-GNN:  batch_size=1  → accumulate tasks_per_batch items per optimizer step
-ECFP: batch_size=tasks_per_batch → single forward pass per optimizer step
-Both produce the same effective gradient: mean over tasks_per_batch episodes.
+Both GNN and ECFP use batch_size=1 and accumulate tasks_per_batch forward passes
+per optimizer step. Streaming over all 26k assays produces variable query sizes
+(small assays may have fewer molecules than n_query), so batching > 1 episode
+would fail collation. Gradient accumulation over tasks_per_batch passes produces
+the same effective gradient as a single batched forward pass over tasks_per_batch.
 """
 
 import random
@@ -77,9 +79,11 @@ def _make_loaders(encoder, train_files, val_files,
     collate_fn   = graph_episode_collate if is_gnn else None
     gnn_kwargs   = {"fsmol_style": is_fsmol_gnn} if is_gnn else {}
 
-    # GNN: batch_size=1 → accumulate tasks_per_batch items per step (memory safety)
-    # ECFP: batch_size=tasks_per_batch → single fast forward pass per step
-    train_batch_size = 1 if is_gnn else 16
+    # batch_size=1 for all encoders — streaming assays have variable query sizes
+    # (small assays may have fewer than n_query remaining molecules after support sampling),
+    # so stacking a batch of 16 episodes would fail. Gradient accumulation over
+    # tasks_per_batch forward passes produces the same effective gradient.
+    train_batch_size = 1
 
     train_dataset = DatasetCls(
         train_files, n_episodes_train, n_support, n_query,
@@ -97,7 +101,7 @@ def _make_loaders(encoder, train_files, val_files,
         persistent_workers=True,
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=1 if is_gnn else 32, shuffle=False,
+        val_dataset, batch_size=1, shuffle=False,
         num_workers=0, collate_fn=collate_fn,
     )
     return train_loader, val_loader
@@ -138,7 +142,7 @@ def pretrain_classification(
     print(f"Training on: {device}")
 
     is_gnn  = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
-    n_accum = tasks_per_batch if is_gnn else 1   # see module docstring
+    n_accum = tasks_per_batch
 
     train_loader, val_loader = _make_loaders(
         encoder, train_assays, val_assays,
@@ -278,7 +282,7 @@ def pretrain_regression(
     print(f"Training on: {device}")
 
     is_gnn  = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
-    n_accum = tasks_per_batch if is_gnn else 1
+    n_accum = tasks_per_batch
 
     train_loader, val_loader = _make_loaders(
         encoder, train_assays, val_assays,
