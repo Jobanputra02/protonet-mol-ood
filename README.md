@@ -79,10 +79,10 @@ PTN/
 
 | Regime | Runs | Training pool | Notes |
 |---|---|---|---|
-| **Pool-based** | Runs 1–2 (ECFP shift-aware) | ~62 assays | Legacy runs; severely limited task diversity |
-| **Streaming** | Runs 3–4 (ECFP random, GNN shift-aware) | All ~26,868 FS-Mol train assays | Matches FS-Mol paper; full task diversity |
+| **Pool-based** | Run 1 (ECFP regression) | ~62 assays | Legacy run; severely limited task diversity |
+| **Streaming** | Runs 2–4 (ECFP classification + GNN) | All ~26,868 FS-Mol train assays | Matches FS-Mol paper; full task diversity |
 
-Runs 1–2 are kept as ECFP baselines but are not methodologically comparable to the streaming runs due to the training pool size difference.
+Run 1 is kept as a legacy ECFP regression baseline. Runs 2–4 all stream from the full 26k training assays and are directly comparable.
 
 ---
 
@@ -95,7 +95,7 @@ Evaluated on 154 FS-Mol test assays and 3 DrugOOD shift types (IC50, 3 seeds, co
 | Run | Encoder | Episodes | Training | n=16 | n=32 | n=64 | n=128 | n=256 | n=512 | Best val |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 1 | ECFP | shift-aware | pool-based | 0.028 | 0.033 | 0.041 | 0.062 | 0.065 | 0.056 | RMSE 0.527 (ep15) |
-| 2 | ECFP | shift-aware | pool-based | 0.038 | 0.042 | 0.049 | 0.076 | 0.110 | 0.105 | ΔAUPRC +0.162 (ep19) |
+| 2 | ECFP | shift-aware | **streaming** | 0.118 | 0.138 | 0.155 | **0.182** | 0.087 | 0.060 | ΔAUPRC +0.172 (ep77) |
 | 3 | ECFP | **random** | **streaming** | 0.127 | 0.144 | 0.163 | **0.187** | 0.087 | 0.074 | ΔAUPRC +0.186 (ep77) |
 | 4 | FS-Mol GNN 10L | shift-aware | **streaming** | **0.129** | 0.156 | 0.183 | **0.222** | 0.151 | 0.153 | ΔAUPRC +0.207 (ep69) |
 | *FS-Mol paper* | *GNN + ProtoNet* | *random* | *full data* | *0.126* | *-* | *0.185* | *0.201* | *0.226* | *-* |
@@ -105,7 +105,7 @@ Evaluated on 154 FS-Mol test assays and 3 DrugOOD shift types (IC50, 3 seeds, co
 | Run | Encoder | Episodes | n=16 | n=32 | n=64 | n=128 | n=256 | n=512 |
 |---|---|---|---|---|---|---|---|---|
 | 1 | ECFP | shift-aware | 0.018 | 0.018 | 0.019 | 0.019 | 0.003 | −0.003 |
-| 2 | ECFP | shift-aware | 0.010 | 0.011 | 0.009 | 0.011 | 0.007 | 0.003 |
+| 2 | ECFP | shift-aware | 0.057 | 0.053 | 0.053 | 0.058 | 0.008 | 0.001 |
 | 3 | ECFP | **random** | 0.064 | 0.059 | 0.057 | 0.064 | 0.007 | 0.009 |
 | 4 | FS-Mol GNN 10L | shift-aware | 0.050 | 0.053 | 0.052 | 0.053 | 0.011 | 0.006 |
 
@@ -116,17 +116,17 @@ Inside-task OOD: support and query from different scaffold groups within the sam
 | Run | Encoder | Episodes | Inside-task ΔAUPRC | DrugOOD assay | DrugOOD scaffold | DrugOOD size |
 |---|---|---|---|---|---|---|
 | 1 | ECFP | shift-aware | 0.041 | 0.008 | 0.000 | 0.016 |
-| 2 | ECFP | shift-aware | 0.023 | 0.021 | 0.019 | 0.021 |
+| 2 | ECFP | shift-aware | 0.018 | 0.016 | 0.011 | 0.014 |
 | 3 | ECFP | **random** | 0.014 | 0.017 | 0.011 | 0.009 |
 | 4 | FS-Mol GNN 10L | shift-aware | 0.017 | 0.036 | 0.026 | 0.025 |
 
 ### Key Observations
 
-- **Streaming vs pool-based**: Run 3 (streaming ECFP random) achieves 0.127 at n=16 vs Run 2 (pool-based ECFP shift-aware) 0.038 — a 3× improvement driven entirely by training data diversity (26k assays vs 62).
-- **n=256 drop is not unique to scaffold-aware training**: Run 3 (random IID episodes) also drops hard at n=256 (0.187 → 0.087), showing the large-n degradation is an ECFP representation limit, not just a scaffold-aware training artifact. The GNN random run will confirm whether this holds for the GNN encoder.
-- **Scaffold split collapse at large n**: All streaming runs collapse at n=256 for scaffold split (Run 3: 0.064 → 0.007, Run 4: 0.050 → 0.011). This is consistent regardless of episode type — scaffold OOD is fundamentally harder.
-- **GNN excels at n=128**: Run 4 (GNN shift-aware) peaks at 0.222 at n=128, outperforming paper's 0.201 and all ECFP runs. GNN representations are richer and scale better with support size.
-- **GNN improves DrugOOD assay OOD**: GNN assay OOD (0.036) is highest across all runs. ECFP random is weaker on DrugOOD assay (0.017) despite matching GNN on FS-Mol at n=16 — cross-assay transfer benefits from GNN's structural features.
+- **Streaming matters more than episode type for ECFP**: Run 2 (streaming, shift-aware) reaches n=16 ΔAUPRC 0.118, vs Run 1 (pool-based) 0.028 — a 4× gain from training data diversity alone. Episode type (shift-aware vs random) barely changes ECFP performance: Run 2 peaks at 0.182 and Run 3 at 0.187 at n=128.
+- **n=256 drop is an ECFP representation limit**: Both Run 2 (shift-aware) and Run 3 (random) show the same hard drop at n=256 (0.182→0.087 and 0.187→0.087). Scaffold-aware training alone does not cause or cure the large-n degradation — it is intrinsic to ECFP fingerprint prototypes.
+- **Scaffold split collapse at large n**: All streaming runs collapse at n=256 for scaffold split (Runs 2–3: ~0.057→0.008, Run 4: 0.050→0.011). This holds regardless of encoder or episode type — scaffold OOD is fundamentally harder.
+- **GNN excels at n=128**: Run 4 (GNN shift-aware) peaks at 0.222 at n=128, outperforming the paper's 0.201 and all ECFP runs. GNN representations are richer and scale better with support size.
+- **GNN improves DrugOOD assay OOD**: GNN assay OOD (0.036) is highest across all runs. ECFP runs (0.011–0.016) are weaker despite similar FS-Mol random-split scores — cross-assay transfer benefits from GNN's structural features.
 - **FS-Mol paper parity**: Run 4 matches paper at n=16 (0.129 vs 0.126) and exceeds at n=64/128. Remaining gap at n=256 (0.151 vs 0.226) is under investigation with the pending GNN random run.
 
 For full per-assay distributions, per-context-size DrugOOD curves, and baseline comparisons, see [Analysis/model/README.md](Analysis/model/README.md).

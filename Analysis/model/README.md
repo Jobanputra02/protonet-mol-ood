@@ -45,13 +45,15 @@ Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
 | Run | Encoder | Head | Episodes | Pool / Streaming |
 |---|---|---|---|---|
 | 1 | ECFP 2048-bit MLP | Regression | Shift-aware | Pool-based (~62 assays) |
-| 2 | ECFP 2048-bit MLP | Classification | Shift-aware | Pool-based (~62 assays) |
+| 2 | ECFP 2048-bit MLP | Classification | Shift-aware | **Streaming (all 26,868 assays)** |
 | 3 | ECFP 2048-bit MLP | Classification | **Random** | **Streaming (all 26,868 assays)** |
 | 4 | FS-Mol GNN 10L | Classification | Shift-aware | **Streaming (all 26,868 assays)** |
 
-**Note on Runs 1–2 (pool-based):** Trained on a fixed pool of ~62 assays. Useful as legacy ECFP baselines but not comparable to streaming runs.
+**Note on Run 1 (pool-based):** Trained on a fixed pool of ~62 assays. Useful as a legacy ECFP regression baseline but not comparable to streaming runs.
 
-**Note on Run 3 (streaming ECFP random):** First streaming ECFP run. IID (random) episodes matching the paper's training protocol but with an ECFP encoder. Reveals that the n=256 performance drop is an ECFP representation limit, not solely a scaffold-aware training artifact.
+**Note on Run 2 (streaming ECFP shift-aware):** Re-run of the ECFP classification head with streaming training (all 26,868 assays) and shift-aware scaffold episodes. Directly comparable to Run 3 (same encoder + head, different episode type).
+
+**Note on Run 3 (streaming ECFP random):** IID (random) episodes matching the paper's training protocol. Compared with Run 2, reveals that the n=256 performance drop is an ECFP representation limit, not a scaffold-aware training artifact.
 
 **Note on Run 4 (streaming GNN shift-aware):** Primary comparison against the FS-Mol paper. All known implementation differences fixed (binary labels, sum aggregator, 10k steps).
 
@@ -115,41 +117,43 @@ Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
 
 ---
 
-### Run 2: ECFP + Classification Head — Shift-Aware, Pool-Based
+### Run 2: ECFP + Classification Head — Shift-Aware, Streaming
 
 > **Encoder:** ECFP4 2048-bit → 3-layer MLP → 256-dim  
-> **Training:** Pool-based, ~62-assay pool, lr=1e-3, BCE loss, n_support=64, n_query=256  
-> **Best checkpoint:** epoch 19, Val ΔAUPRC +0.1616  
+> **Training:** Streaming from all 26,868 FS-Mol train assays. lr=1e-3, BCE loss, 16 tasks/step, 10,000 gradient steps. Binary ChEMBL labels. Shift-aware scaffold episodes.  
+> **Best checkpoint:** epoch 77, Val ΔAUPRC +0.1717  
 > **Evaluation:** 154 FS-Mol test assays. Spearman/RMSE suppressed (predictions are probabilities).
 
 #### FS-Mol Test — ΔAUPRC
 
 | Support size | Random | Scaffold | Size |
 |---|---|---|---|
-| 16 | 0.0376 | 0.0100 | 0.0347 |
-| 32 | 0.0422 | 0.0105 | 0.0318 |
-| 64 | 0.0487 | 0.0094 | 0.0356 |
-| 128 | 0.0756 | 0.0109 | 0.0404 |
-| 256 | 0.1102 | 0.0066 | 0.0690 |
-| 512 | 0.1045 | 0.0026 | 0.0904 |
+| 16 | 0.1181 | 0.0571 | 0.1049 |
+| 32 | 0.1377 | 0.0532 | 0.1182 |
+| 64 | 0.1551 | 0.0534 | 0.1295 |
+| 128 | **0.1815** | 0.0579 | 0.1300 |
+| 256 | 0.0872 | 0.0080 | 0.0347 |
+| 512 | 0.0603 | 0.0013 | 0.0291 |
+
+**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.018 across 153 assays.
 
 #### DrugOOD — ΔAUPRC (IC50)
 
 | Context size | Scaffold OOD | Scaffold IID | Size OOD | Size IID | Assay OOD | Assay IID |
 |---|---|---|---|---|---|---|
-| 16 | +0.0085 | +0.0076 | +0.0131 | +0.0101 | +0.0264 | +0.0348 |
-| 32 | +0.0201 | +0.0067 | +0.0033 | +0.0042 | +0.0214 | +0.0293 |
-| 64 | +0.0199 | +0.0172 | +0.0277 | +0.0159 | +0.0120 | +0.0250 |
-| 128 | +0.0181 | +0.0176 | +0.0203 | +0.0133 | +0.0180 | +0.0361 |
-| 256 | +0.0215 | +0.0187 | +0.0334 | +0.0175 | +0.0203 | +0.0397 |
-| 512 | +0.0248 | +0.0247 | +0.0273 | +0.0141 | +0.0259 | +0.0466 |
-| **Mean** | **0.0188** | **0.0154** | **0.0209** | **0.0125** | **0.0207** | **0.0353** |
+| 16 | +0.0000 | +0.0000 | +0.0265 | +0.0090 | +0.0109 | +0.0098 |
+| 32 | +0.0059 | +0.0046 | +0.0032 | +0.0072 | +0.0095 | +0.0079 |
+| 64 | +0.0009 | +0.0016 | −0.0055 | +0.0041 | +0.0174 | +0.0163 |
+| 128 | +0.0243 | +0.0047 | +0.0055 | +0.0075 | +0.0147 | +0.0134 |
+| 256 | +0.0125 | +0.0121 | +0.0246 | +0.0144 | +0.0177 | +0.0172 |
+| 512 | +0.0247 | +0.0134 | +0.0296 | +0.0165 | +0.0232 | +0.0252 |
+| **Mean** | **0.0114** | **0.0061** | **0.0140** | **0.0098** | **0.0156** | **0.0150** |
 
 **Key observations:**
-- Classification head substantially outperforms regression on random ΔAUPRC at large n (0.110 vs 0.065 at n=256).
-- DrugOOD balanced across all 3 shift types (0.019–0.021 mean OOD).
-- Assay IID notably high (0.035 mean) — generalises within-assay better than cross-assay.
-- Scaffold split remains weak (0.003–0.021) — representation bottleneck regardless of head type.
+- Streaming training gives a large improvement over the old pool-based Run 2: n=16 jumps from 0.038 to 0.118, confirming that training data diversity dominates for ECFP.
+- Compared to Run 3 (random episodes, same streaming setup), shift-aware training is slightly weaker at n=128 (0.182 vs 0.187) but the difference is small — episode type matters less than data diversity for ECFP.
+- n=256 drop present under shift-aware training too (0.182 → 0.087), matching Run 3's behaviour. The drop is an ECFP representation limit, not episode-type-specific.
+- DrugOOD performance is lower than the old pool-based run (assay OOD 0.016 vs 0.021). Shift-aware scaffold episodes during pretraining do not obviously improve DrugOOD transfer for ECFP.
 
 #### Figures
 

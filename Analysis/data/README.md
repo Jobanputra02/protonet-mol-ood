@@ -153,23 +153,23 @@ Many DrugOOD assays have as few as 1 molecule in some splits. These produce NaN 
 
 **Figure 1(a) — Assay size distributions (train / valid / test):**
 
-![Fig 1a](../../outputs/figures/fig1a_assay_sizes.png)
+![Fig 1a](../../outputs/figures/data_analysis/fig1a_assay_sizes.png)
 
 **Figure 1(b) — Fraction-active distribution across assays:**
 
-![Fig 1b](../../outputs/figures/fig1b_fraction_actives.png)
+![Fig 1b](../../outputs/figures/data_analysis/fig1b_fraction_actives.png)
 
 **Figure 1(c) — DrugOOD domain size distributions:**
 
-![Fig 1c](../../outputs/figures/fig1c_domain_sizes.png)
+![Fig 1c](../../outputs/figures/data_analysis/fig1c_domain_sizes.png)
 
 **Figure — Assay size vs fraction of exact measurements:**
 
-![Size vs exact](../../outputs/figures/fig_size_vs_fraction_exact.png)
+![Size vs exact](../../outputs/figures/data_analysis/fig_size_vs_fraction_exact.png)
 
 **Figure — Per-task scaffold diversity across splits:**
 
-![Scaffold diversity](../../outputs/figures/fig_scaffold_diversity_per_task.png)
+![Scaffold diversity](../../outputs/figures/data_analysis/fig_scaffold_diversity_per_task.png)
 
 **Figure — Tanimoto distance distributions and t-SNE chemical space (FS-Mol vs DrugOOD):**
 
