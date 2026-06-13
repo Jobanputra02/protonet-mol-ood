@@ -15,6 +15,7 @@ the same effective gradient as a single batched forward pass over tasks_per_batc
 """
 
 import random
+from typing import Union
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
@@ -96,13 +97,15 @@ def _make_loaders(encoder, train_files, val_files,
 
     train_loader = DataLoader(
         train_dataset, batch_size=train_batch_size, shuffle=False,
-        num_workers=4, pin_memory=not is_gnn,
+        num_workers=4, pin_memory=not is_gnn, prefetch_factor=4,
         collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
         persistent_workers=True,
     )
     val_loader = DataLoader(
         val_dataset, batch_size=1, shuffle=False,
-        num_workers=0, collate_fn=collate_fn,
+        num_workers=2, pin_memory=not is_gnn, prefetch_factor=2,
+        collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
+        persistent_workers=True,
     )
     return train_loader, val_loader
 
@@ -123,7 +126,7 @@ def pretrain_classification(
     val_assays: list[str],            # .jsonl.gz file paths — all val files
     n_epochs: int = 100,
     tasks_per_batch: int = 16,        # episodes accumulated per optimizer step
-    n_support: int = 64,              # FS-Mol paper episode size
+    n_support: Union[int, list] = 64,  # fixed int or list[int] drawn per episode
     n_query: int = 256,               # FS-Mol paper episode size
     n_episodes_train: int = 1000,     # episodes per epoch
     n_episodes_val: int = 200,        # val episodes per epoch (~5 per val assay)
@@ -154,6 +157,10 @@ def pretrain_classification(
     model     = PrototypicalNetworkClassification(encoder).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     use_amp   = (device.type == "cuda")
+    amp_dtype = (torch.bfloat16
+                 if use_amp and torch.cuda.is_bf16_supported()
+                 else torch.float16)
+    print(f"  AMP dtype: {amp_dtype} (bf16 supported: {torch.cuda.is_bf16_supported() if use_amp else 'N/A'})")
 
     encoder_cfg         = _encoder_config(encoder)
     best_val_dauprc     = -float("inf")
@@ -178,7 +185,7 @@ def pretrain_classification(
         for batch in train_loader:
             s_in, s_lbl, q_in, q_lbl = _batch_to_device(batch, device)
 
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
                 loss, metrics = model.compute_loss_batched(s_in, s_lbl, q_in, q_lbl)
 
             (loss / n_accum).backward()
@@ -207,7 +214,7 @@ def pretrain_classification(
         with torch.no_grad():
             for vbatch in val_loader:
                 vs_in, vs_lbl, vq_in, vq_lbl = _batch_to_device(vbatch, device)
-                with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                with torch.autocast(device_type=device.type, dtype=amp_dtype,
                                     enabled=use_amp):
                     vloss, vmet = model.compute_loss_batched(vs_in, vs_lbl, vq_in, vq_lbl)
                 val_bce_buf.append(vloss.item())
@@ -264,7 +271,7 @@ def pretrain_regression(
     val_assays: list[str],
     n_epochs: int = 100,
     tasks_per_batch: int = 16,
-    n_support: int = 64,
+    n_support: Union[int, list] = 64,  # fixed int or list[int] drawn per episode
     n_query: int = 256,
     n_episodes_train: int = 1000,
     n_episodes_val: int = 200,
@@ -293,6 +300,10 @@ def pretrain_regression(
     model     = PrototypicalNetworkRegression(encoder).to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     use_amp   = (device.type == "cuda")
+    amp_dtype = (torch.bfloat16
+                 if use_amp and torch.cuda.is_bf16_supported()
+                 else torch.float16)
+    print(f"  AMP dtype: {amp_dtype} (bf16 supported: {torch.cuda.is_bf16_supported() if use_amp else 'N/A'})")
 
     encoder_cfg         = _encoder_config(encoder)
     best_val_rmse       = float("inf")
@@ -316,7 +327,7 @@ def pretrain_regression(
         for batch in train_loader:
             s_in, s_lbl, q_in, q_lbl = _batch_to_device(batch, device)
 
-            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
                 loss, metrics = model.compute_loss_batched(s_in, s_lbl, q_in, q_lbl)
 
             (loss / n_accum).backward()
@@ -343,7 +354,7 @@ def pretrain_regression(
         with torch.no_grad():
             for vbatch in val_loader:
                 vs_in, vs_lbl, vq_in, vq_lbl = _batch_to_device(vbatch, device)
-                with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                with torch.autocast(device_type=device.type, dtype=amp_dtype,
                                     enabled=use_amp):
                     _, vmet = model.compute_loss_batched(vs_in, vs_lbl, vq_in, vq_lbl)
                 val_rmse_buf.append(vmet["rmse"])

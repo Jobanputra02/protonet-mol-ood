@@ -98,10 +98,16 @@ def plot_fsmol_line(df: pd.DataFrame) -> None:
                 label=stype,
             )
 
+        # annotate N assays (from random split as representative) below each x-tick
+        n_per_size = (df[df.split_type == split_types[0]]
+                      .groupby("support_size")["assay_id"].nunique())
         ax.axhline(0, color="gray", linestyle="--", linewidth=1, alpha=0.7)
         ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
         ax.set_axisbelow(True)
-        ax.set_xticks(sorted(df["support_size"].unique()))
+        sizes = sorted(df["support_size"].unique())
+        ax.set_xticks(sizes)
+        ax.set_xticklabels([f"{s}\n(N={n_per_size.get(s, '?')})" for s in sizes],
+                           fontsize=8)
         ax.set_xlabel("Support set size", fontsize=11)
         ax.set_ylabel(ylabel, fontsize=11)
         ax.set_title(f"FS-Mol Test: {ylabel} vs Support Size", fontsize=12)
@@ -192,7 +198,8 @@ def plot_fsmol_boxplot(df: pd.DataFrame) -> None:
         handles.append(plt.Line2D([0], [0], color="red", linestyle="--", label="Random baseline"))
         ax.legend(handles=handles, fontsize=8)
 
-    plt.suptitle(f"FS-Mol Test: Per-Assay Distribution ({RUN_LABEL})", fontsize=13, y=1.02)
+    plt.suptitle(f"FS-Mol Test: Per-Assay Distribution ({RUN_LABEL})",
+                 fontsize=13, y=1.02)
     plt.tight_layout()
     out = os.path.join(RUN_FIGURES_DIR, "fig2b_fsmol_boxplot.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")

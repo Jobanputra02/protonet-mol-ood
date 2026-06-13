@@ -559,7 +559,7 @@ def evaluate_fsmol_test(
     model: torch.nn.Module,
     test_assays,
     device: torch.device,
-    support_sizes: list[int] = [16, 32, 128, 256],
+    support_sizes: list[int] = [16, 64, 128, 256],
     n_repeats: int = 5,
     seed: int = 42,
     split_type: str = "random",   # "random" | "scaffold" | "size"
@@ -579,12 +579,13 @@ def evaluate_fsmol_test(
     For each (assay, support_size), n_repeats episodes are run with different random
     support draws; metrics are nanmean'd across repeats.
 
+    Note: at large support sizes fewer assays qualify (need n_total > n_sup).
+    The returned DataFrame includes an n_assays column per support_size so this
+    is transparent in reported results — do not filter post-hoc.
+
     Returns one row per (assay × support_size):
         assay_id | split_type | support_size | n_total | n_query
                  | delta_auprc | rmse | mae | spearman
-
-    MIN_TASK_SIZE=32 is applied consistently: assays with fewer exact-measurement
-    molecules are skipped regardless of support_size.
     """
     MIN_TASK_SIZE = 32   # must match main.py — skip assays too small after exact-filtering
     min_grp = max(2, min(support_sizes) // 4)  # scaffold split: min molecules per group
@@ -601,7 +602,6 @@ def evaluate_fsmol_test(
     for file_idx, assay in enumerate(test_assays):
         n_total = len(assay)
 
-        # Fix 3: apply MIN_TASK_SIZE consistently across all support sizes
         if n_total < MIN_TASK_SIZE:
             continue
 

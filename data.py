@@ -167,14 +167,28 @@ class EpisodeSampler:
     # Simpler but does not train for OOD robustness.
     """
 
-    def __init__(self, n_support: int = 16, n_query: int = 16):
+    def __init__(self, n_support=64, n_query=256):
         """
         Args:
-            n_support: Number of molecules in the support (context) set per episode.
+            n_support: Fixed int OR list[int] to sample from per episode.
+                       e.g. 64 → always 64; [16, 32, 64, 128, 256] → drawn each episode.
             n_query:   Number of molecules in the query set per episode.
         """
-        self.n_support = n_support
-        self.n_query = n_query
+        self.n_support = n_support   # int or list[int]
+        self.n_query   = n_query
+
+    @property
+    def n_support_min(self) -> int:
+        """Smallest possible support size — used for assay size gating."""
+        if isinstance(self.n_support, (list, tuple)):
+            return int(min(self.n_support))
+        return int(self.n_support)
+
+    def _draw_n_support(self) -> int:
+        """Sample one support size for the current episode."""
+        if isinstance(self.n_support, (list, tuple)):
+            return int(np.random.choice(self.n_support))
+        return int(self.n_support)
 
     def sample_episode(self, dataset: AssayDataset, shift_aware: bool = True,
                        use_binary: bool = False):
@@ -204,8 +218,9 @@ class EpisodeSampler:
         Uses whatever molecules are available — no replacement, capped to pool size.
         Falls back to random if fewer than 2 usable scaffold groups.
         """
-        min_group = max(2, self.n_support // 4)
-        usable_keys = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
+        n_sup_target = self._draw_n_support()
+        min_group    = max(2, n_sup_target // 4)
+        usable_keys  = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
 
         if len(usable_keys) < 2:
             return self._sample_random_episode(dataset, use_binary=use_binary)
@@ -215,8 +230,8 @@ class EpisodeSampler:
         query_pool   = dataset.scaffold_groups[usable_keys[chosen[1]]]
 
         # Cap to available pool size — no replacement, no duplication
-        n_sup = min(self.n_support, len(support_pool))
-        n_qry = min(self.n_query,   len(query_pool))
+        n_sup = min(n_sup_target,  len(support_pool))
+        n_qry = min(self.n_query,  len(query_pool))
         sup_idx = np.random.choice(support_pool, size=n_sup, replace=False)
         qry_idx = np.random.choice(query_pool,   size=n_qry, replace=False)
 
@@ -224,18 +239,12 @@ class EpisodeSampler:
 
     def _sample_random_episode(self, dataset: AssayDataset, use_binary: bool = False):
         """
-        Support and query sampled randomly from the whole assay.
-        Standard FS-Mol protocol. Used as fallback or for baseline comparison.
+        Support and query sampled from the whole assay using stratified splitting.
+        Preserves the natural active/inactive class proportion in the support set,
+        matching the FS-Mol paper's StratifiedShuffleSplit approach. Falls back to
+        pure random sampling when binary labels are unavailable or all-one-class.
         """
-        n_total = len(dataset)
-        all_idx = np.random.permutation(n_total)
-
-        n_sup = min(self.n_support, n_total // 2)
-        n_qry = min(self.n_query, n_total - n_sup)
-
-        sup_idx = all_idx[:n_sup]
-        qry_idx = all_idx[n_sup:n_sup + n_qry]
-
+        sup_idx, qry_idx = self._get_episode_indices_random(dataset)
         return self._indices_to_tensors(dataset, sup_idx, qry_idx, use_binary=use_binary)
 
     def _indices_to_tensors(self, dataset, sup_idx, qry_idx, use_binary: bool = False):
@@ -260,25 +269,51 @@ class EpisodeSampler:
     # ------------------------------------------------------------------
 
     def _get_episode_indices_shift_aware(self, dataset: "AssayDataset"):
-        min_group = max(2, self.n_support // 4)
-        usable_keys = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
+        n_sup_target = self._draw_n_support()
+        min_group    = max(2, n_sup_target // 4)
+        usable_keys  = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
         if len(usable_keys) < 2:
             return self._get_episode_indices_random(dataset)
         chosen = np.random.choice(len(usable_keys), size=2, replace=False)
         sup_pool = dataset.scaffold_groups[usable_keys[chosen[0]]]
         qry_pool = dataset.scaffold_groups[usable_keys[chosen[1]]]
-        # Cap to available size — no replacement, no duplicates
-        n_sup = min(self.n_support, len(sup_pool))
-        n_qry = min(self.n_query,   len(qry_pool))
+        n_sup = min(n_sup_target,  len(sup_pool))
+        n_qry = min(self.n_query,  len(qry_pool))
         sup_idx = np.random.choice(sup_pool, size=n_sup, replace=False)
         qry_idx = np.random.choice(qry_pool, size=n_qry, replace=False)
         return sup_idx, qry_idx
 
     def _get_episode_indices_random(self, dataset: "AssayDataset"):
-        n_total = len(dataset)
+        """
+        Stratified support/query split — preserves active/inactive class proportion.
+        Matches FS-Mol paper's StratifiedShuffleSplit. Falls back to pure random
+        when binary labels are missing or the assay is all one class.
+        """
+        from sklearn.model_selection import StratifiedShuffleSplit
+        n_sup_target = self._draw_n_support()
+        n_total      = len(dataset)
+        n_sup        = min(n_sup_target, n_total // 2)
+        n_qry        = min(self.n_query, n_total - n_sup)
+
+        labels = dataset.binary_labels
+        can_stratify = (
+            labels is not None
+            and len(labels) == n_total
+            and len(np.unique(labels)) >= 2   # at least one active and one inactive
+            and n_sup >= 2                    # need at least 1 per class
+        )
+
+        if can_stratify:
+            try:
+                sss = StratifiedShuffleSplit(n_splits=1, train_size=n_sup, random_state=None)
+                sup_idx, remaining = next(sss.split(np.arange(n_total), labels))
+                qry_idx = remaining[:n_qry]
+                return sup_idx, qry_idx
+            except ValueError:
+                pass  # fall through to random if stratification fails (e.g. too few per class)
+
+        # Fallback: pure random
         all_idx = np.random.permutation(n_total)
-        n_sup = min(self.n_support, n_total // 2)
-        n_qry = min(self.n_query, n_total - n_sup)
         return all_idx[:n_sup], all_idx[n_sup:n_sup + n_qry]
 
 
@@ -388,8 +423,9 @@ class FSMolEpisodeDataset(Dataset):
         self.sampler           = EpisodeSampler(n_support, n_query)
         self.shift_aware       = shift_aware
         self.use_binary_labels = use_binary_labels
+        n_sup_str = str(n_support) if isinstance(n_support, int) else f"{min(n_support)}–{max(n_support)} (variable)"
         print(f"  Streaming ECFP dataset: {len(self.all_files)} training files, "
-              f"min {n_support} molecules per assay")
+              f"n_support={n_sup_str}")
 
     def refresh_pool(self, verbose: bool = False) -> None:
         pass   # no-op — streaming loads fresh from disk each episode
@@ -401,7 +437,7 @@ class FSMolEpisodeDataset(Dataset):
         for _ in range(200):
             path = self.all_files[np.random.randint(len(self.all_files))]
             ds = _load_assay_file(path)
-            if len(ds) >= self.n_support:
+            if len(ds) >= self.sampler.n_support_min:
                 return self.sampler.sample_episode(
                     ds, shift_aware=self.shift_aware, use_binary=self.use_binary_labels
                 )
@@ -529,8 +565,9 @@ class FSMolGraphEpisodeDataset(Dataset):
         self.fsmol_style       = fsmol_style
         self.use_binary_labels = use_binary_labels
         self._setup_graph_builder()
+        n_sup_str = str(n_support) if isinstance(n_support, int) else f"{min(n_support)}–{max(n_support)} (variable)"
         print(f"  Streaming GNN dataset: {len(self.all_files)} training files, "
-              f"min {n_support} molecules per assay")
+              f"n_support={n_sup_str}")
 
     def _setup_graph_builder(self):
         """Cache featurisation imports and dummy graph to avoid repeated imports."""
@@ -569,7 +606,7 @@ class FSMolGraphEpisodeDataset(Dataset):
         for _ in range(200):
             path = self.all_files[np.random.randint(len(self.all_files))]
             ds = _load_assay_file(path)
-            if len(ds) < self.n_support:
+            if len(ds) < self.sampler.n_support_min:
                 continue
             if self.shift_aware and len(ds.scaffold_groups) >= 2:
                 sup_idx, qry_idx = self.sampler._get_episode_indices_shift_aware(ds)

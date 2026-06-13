@@ -314,10 +314,10 @@ if __name__ == "__main__":
     #                 "random"        => support and query drawn randomly (IID episodes)
     # ==========================================================================
     MODEL_HEAD     = "classification"  # "regression" | "classification"
-    ENCODER        = "fsmol_gnn"      # "ecfp" | "gnn" | "fsmol_gnn"
-    TRAINING_SPLIT = "shift_aware"    # "shift_aware" | "random"
-    SEED           = 42               # fixed for reproducibility — change to run a different seed
-    SKIP_TRAINING  = False             # True = load existing checkpoint, skip steps 1-2 pretraining
+    ENCODER        = "fsmol_gnn"           # "ecfp" | "gnn" | "fsmol_gnn"
+    TRAINING_SPLIT = "random"    # "shift_aware" | "random"
+    SEED           = 2                # change per run: 0, 1, 2
+    SKIP_TRAINING  = False            # True = load existing checkpoint, skip steps 1-2 pretraining
 
     # Pretrain functions are named pretrain_{head} — import from train.py.
     PRETRAIN_FN_MAP = {
@@ -418,7 +418,7 @@ if __name__ == "__main__":
             val_assays=val_files,        # all ~40 val files
             n_epochs=100,
             tasks_per_batch=16,          # FS-Mol paper: 16 tasks accumulated per optimizer step
-            n_support=64,                # FS-Mol paper training episode size
+            n_support=64,                        # fixed — matches FS-Mol paper training protocol
             n_query=256,                 # FS-Mol paper training episode size
             n_episodes_train=1600,       # episodes per epoch (100 optimizer steps/epoch × 100 epochs = 10,000 steps)
             n_episodes_val=200,          # ~5 per val assay × 40 val assays
@@ -512,7 +512,11 @@ if __name__ == "__main__":
     fsmol_test_df.to_csv(fsmol_test_path, index=False)
     print(f"\n  All 3 curves saved => {fsmol_test_path}")
 
-    print("\n=== FS-Mol Test: mean ΔAUPRC per split_type × support_size ===")
-    print(fsmol_test_df.groupby(["split_type", "support_size"])["delta_auprc"].mean().round(4))
+    print("\n=== FS-Mol Test: mean ΔAUPRC and N assays per split_type × support_size ===")
+    summary = fsmol_test_df.groupby(["split_type", "support_size"]).agg(
+        delta_auprc=("delta_auprc", "mean"),
+        n_assays=("assay_id", "nunique"),
+    ).round(4)
+    print(summary.to_string())
 
 # scp "D:/Thesis/PTN/main.py" "D:/Thesis/PTN/config.py" "D:/Thesis/PTN/data.py" "D:/Thesis/PTN/evaluate.py" "D:/Thesis/PTN/model.py" "D:/Thesis/PTN/featurize.py" "D:/Thesis/PTN/train.py" chjo00006@conduit.hpc.uni-saarland.de:/home/chjo00006/PTN/

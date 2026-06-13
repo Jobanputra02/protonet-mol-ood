@@ -8,7 +8,7 @@ import os
 
 # ── Environment ────────────────────────────────────────────────────────────────
 # Change this one line to switch environments
-ENV = "local"   # "local" | "server"
+ENV = "server"    # "local" | "server"
 
 if ENV == "local":
     FSMOL_DIR   = "D:/Thesis/PTN/data/fsmol"
