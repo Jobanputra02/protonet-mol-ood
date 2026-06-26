@@ -28,6 +28,37 @@ python Analysis/model/plot_results.py --encoder fsmol_gnn --head classification 
 
 ---
 
+### `plot_multi_seed.py`
+
+Merges seed0/1/2 result CSVs, generates per-model and all-model comparison figures. Use this for all classification runs (which have 3 seeds each). For the single-seed regression run, use `plot_results.py` instead.
+
+```bash
+# regenerate all per-model figures + comparison figures
+python Analysis/model/plot_multi_seed.py --all
+
+# single model only
+python Analysis/model/plot_multi_seed.py --model fsmol_gnn_classification_random
+
+# comparison figures only (skip per-model re-generation)
+python Analysis/model/plot_multi_seed.py --comparison-only
+```
+
+**Figures generated (per model):** `fig2a_fsmol_line_plot.png`, `fig2b_fsmol_boxplot.png`, `fig3_drugood_line_plot.png`
+
+**Comparison figures (all models overlaid, saved to `data_analysis/`):** `fig_comparison_random.png`, `fig_comparison_scaffold.png`, `fig_comparison_random_vs_scaffold.png`, `fig_comparison_drugood_assay.png`
+
+---
+
+### `rf_baseline.py`
+
+Trains a fresh `RandomForestClassifier` on each FS-Mol test assay's context set and evaluates on the query. Establishes the ECFP feature upper ceiling independent of meta-learning. Results go to `DATA_ANALYSIS_RESULTS_DIR/rf_baseline_results.csv`.
+
+```bash
+python Analysis/model/rf_baseline.py
+```
+
+---
+
 ### `diagnostic_baseline.py`
 
 Compares a pretrained PTN against simple baselines (mean-label, kNN k=1/3/5, KR-Tanimoto α=0.01/0.1/1.0) on the same episodes.
@@ -40,7 +71,7 @@ python Analysis/model/diagnostic_baseline.py
 
 ## Completed Runs
 
-Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
+Five model runs + RF lower-bound baseline completed.
 
 | Run | Encoder | Head | Episodes | Pool / Streaming |
 |---|---|---|---|---|
@@ -48,6 +79,8 @@ Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
 | 2 | ECFP 2048-bit MLP | Classification | Shift-aware | **Streaming (all 26,868 assays)** |
 | 3 | ECFP 2048-bit MLP | Classification | **Random** | **Streaming (all 26,868 assays)** |
 | 4 | FS-Mol GNN 10L | Classification | Shift-aware | **Streaming (all 26,868 assays)** |
+| 5 | FS-Mol GNN 10L | Classification | **Random** | **Streaming (all 26,868 assays)** |
+| RF | ECFP (fixed params) | RandomForest | — | Per-task fresh fit (no meta-learning) |
 
 **Note on Run 1 (pool-based):** Trained on a fixed pool of ~62 assays. Useful as a legacy ECFP regression baseline but not comparable to streaming runs.
 
@@ -56,6 +89,10 @@ Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
 **Note on Run 3 (streaming ECFP random):** IID (random) episodes matching the paper's training protocol. Compared with Run 2, reveals that the n=256 performance drop is an ECFP representation limit, not a scaffold-aware training artifact.
 
 **Note on Run 4 (streaming GNN shift-aware):** Primary comparison against the FS-Mol paper. All known implementation differences fixed (binary labels, sum aggregator, 10k steps).
+
+**Note on Run 5 (streaming GNN random):** Same GNN with IID random episodes. Isolates whether the n=256 scaffold-split collapse is due to shift-aware training or is intrinsic to prototype-based inference.
+
+**Note on RF baseline:** `Analysis/model/rf_baseline.py`. Per-task supervised learning — no episode structure, no meta-training, no prototype computation. Establishes the performance ceiling for ECFP features alone on scaffold-split evaluation.
 
 ---
 
@@ -121,39 +158,37 @@ Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
 
 > **Encoder:** ECFP4 2048-bit → 3-layer MLP → 256-dim  
 > **Training:** Streaming from all 26,868 FS-Mol train assays. lr=1e-3, BCE loss, 16 tasks/step, 10,000 gradient steps. Binary ChEMBL labels. Shift-aware scaffold episodes.  
-> **Best checkpoint:** epoch 77, Val ΔAUPRC +0.1717  
-> **Evaluation:** 154 FS-Mol test assays. Spearman/RMSE suppressed (predictions are probabilities).
+> **Evaluation:** 154 FS-Mol test assays. **All values are 3-seed (seed0/1/2) averages.**
 
-#### FS-Mol Test — ΔAUPRC
+#### FS-Mol Test — ΔAUPRC (3-seed avg)
 
 | Support size | Random | Scaffold | Size |
 |---|---|---|---|
-| 16 | 0.1181 | 0.0571 | 0.1049 |
-| 32 | 0.1377 | 0.0532 | 0.1182 |
-| 64 | 0.1551 | 0.0534 | 0.1295 |
-| 128 | **0.1815** | 0.0579 | 0.1300 |
-| 256 | 0.0872 | 0.0080 | 0.0347 |
-| 512 | 0.0603 | 0.0013 | 0.0291 |
+| 16 | 0.1209 | 0.0570 | 0.1036 |
+| 32 | 0.1368 | 0.0542 | 0.1199 |
+| 64 | 0.1577 | 0.0511 | 0.1302 |
+| 128 | **0.1809** | 0.0573 | 0.1284 |
+| 256 | 0.0782 | 0.0053 | 0.0307 |
+| 512 | 0.0678 | 0.0007 | 0.0425 |
 
-**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.018 across 153 assays.
+**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.021 across 153 assays.
 
-#### DrugOOD — ΔAUPRC (IC50)
+#### DrugOOD — ΔAUPRC (IC50, 3-seed avg)
 
 | Context size | Scaffold OOD | Scaffold IID | Size OOD | Size IID | Assay OOD | Assay IID |
 |---|---|---|---|---|---|---|
-| 16 | +0.0000 | +0.0000 | +0.0265 | +0.0090 | +0.0109 | +0.0098 |
-| 32 | +0.0059 | +0.0046 | +0.0032 | +0.0072 | +0.0095 | +0.0079 |
-| 64 | +0.0009 | +0.0016 | −0.0055 | +0.0041 | +0.0174 | +0.0163 |
-| 128 | +0.0243 | +0.0047 | +0.0055 | +0.0075 | +0.0147 | +0.0134 |
-| 256 | +0.0125 | +0.0121 | +0.0246 | +0.0144 | +0.0177 | +0.0172 |
-| 512 | +0.0247 | +0.0134 | +0.0296 | +0.0165 | +0.0232 | +0.0252 |
-| **Mean** | **0.0114** | **0.0061** | **0.0140** | **0.0098** | **0.0156** | **0.0150** |
+| 16 | +0.0000 | +0.0000 | +0.0083 | +0.0040 | +0.0026 | +0.0002 |
+| 32 | +0.0029 | −0.0006 | −0.0028 | +0.0007 | +0.0022 | +0.0001 |
+| 64 | −0.0041 | −0.0039 | −0.0072 | +0.0009 | +0.0094 | +0.0124 |
+| 128 | +0.0015 | +0.0013 | −0.0040 | +0.0038 | +0.0201 | +0.0245 |
+| 256 | +0.0143 | +0.0103 | +0.0198 | +0.0084 | +0.0215 | +0.0289 |
+| 512 | +0.0152 | +0.0099 | +0.0252 | +0.0114 | +0.0243 | +0.0323 |
+| **Mean** | **0.0050** | **0.0028** | **0.0066** | **0.0049** | **0.0134** | **0.0164** |
 
 **Key observations:**
-- Streaming training gives a large improvement over the old pool-based Run 2: n=16 jumps from 0.038 to 0.118, confirming that training data diversity dominates for ECFP.
-- Compared to Run 3 (random episodes, same streaming setup), shift-aware training is slightly weaker at n=128 (0.182 vs 0.187) but the difference is small — episode type matters less than data diversity for ECFP.
-- n=256 drop present under shift-aware training too (0.182 → 0.087), matching Run 3's behaviour. The drop is an ECFP representation limit, not episode-type-specific.
-- DrugOOD performance is lower than the old pool-based run (assay OOD 0.016 vs 0.021). Shift-aware scaffold episodes during pretraining do not obviously improve DrugOOD transfer for ECFP.
+- Compared to Run 3 (random episodes), shift-aware training is comparable at n=128 (0.181 vs 0.183) — episode type matters less than encoder for ECFP.
+- **n=256 drop** occurs under both episode types (0.181 → 0.078 for shift-aware; 0.183 → 0.079 for random). An ECFP prototype capacity limit, not episode-type-specific.
+- **DrugOOD**: shift-aware ECFP (assay OOD 0.013) is lower than random ECFP (0.016) — shift-aware episodes don't improve cross-dataset transfer for the ECFP encoder.
 
 #### Figures
 
@@ -172,39 +207,38 @@ Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
 
 > **Encoder:** ECFP4 2048-bit → 3-layer MLP → 256-dim  
 > **Training:** Streaming from all 26,868 FS-Mol train assays. lr=1e-3, BCE loss, 16 tasks/step, 10,000 gradient steps. Binary ChEMBL labels. **Random IID episodes** (paper-matching protocol).  
-> **Best checkpoint:** epoch 77, Val ΔAUPRC +0.1864  
-> **Evaluation:** 154 FS-Mol test assays
+> **Evaluation:** 154 FS-Mol test assays. **All values are 3-seed (seed0/1/2) averages.**
 
-#### FS-Mol Test — ΔAUPRC
+#### FS-Mol Test — ΔAUPRC (3-seed avg)
 
 | Support size | Random | Scaffold | Size |
 |---|---|---|---|
-| 16 | 0.1271 | 0.0642 | 0.1114 |
-| 32 | 0.1441 | 0.0586 | 0.1264 |
-| 64 | 0.1628 | 0.0569 | 0.1377 |
-| 128 | **0.1872** | 0.0642 | 0.1361 |
-| 256 | 0.0866 | 0.0073 | 0.0380 |
-| 512 | 0.0738 | 0.0092 | 0.0477 |
+| 16 | 0.1234 | 0.0578 | 0.1059 |
+| 32 | 0.1386 | 0.0531 | 0.1197 |
+| 64 | 0.1575 | 0.0536 | 0.1285 |
+| 128 | **0.1834** | 0.0592 | 0.1305 |
+| 256 | 0.0788 | 0.0078 | 0.0335 |
+| 512 | 0.0660 | 0.0057 | 0.0395 |
 
-**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.014 across 153 assays.
+**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.019 across 153 assays.
 
-#### DrugOOD — ΔAUPRC (IC50)
+#### DrugOOD — ΔAUPRC (IC50, 3-seed avg)
 
 | Context size | Scaffold OOD | Scaffold IID | Size OOD | Size IID | Assay OOD | Assay IID |
 |---|---|---|---|---|---|---|
-| 16 | +0.0000 | +0.0000 | +0.0019 | +0.0021 | +0.0059 | +0.0053 |
-| 32 | +0.0010 | +0.0014 | −0.0022 | +0.0010 | +0.0037 | +0.0044 |
-| 64 | +0.0009 | −0.0001 | +0.0033 | +0.0002 | +0.0133 | +0.0126 |
-| 128 | +0.0180 | +0.0128 | +0.0151 | +0.0083 | +0.0252 | +0.0221 |
-| 256 | +0.0209 | +0.0140 | +0.0187 | +0.0099 | +0.0277 | +0.0249 |
-| 512 | +0.0220 | +0.0158 | +0.0183 | +0.0095 | +0.0268 | +0.0261 |
-| **Mean** | **0.0105** | **0.0073** | **0.0092** | **0.0052** | **0.0171** | **0.0159** |
+| 16 | +0.0000 | +0.0000 | +0.0165 | +0.0059 | +0.0035 | +0.0043 |
+| 32 | +0.0081 | +0.0052 | +0.0105 | +0.0067 | +0.0042 | +0.0067 |
+| 64 | +0.0055 | +0.0054 | +0.0102 | +0.0055 | +0.0163 | +0.0192 |
+| 128 | +0.0255 | +0.0177 | +0.0157 | +0.0091 | +0.0229 | +0.0292 |
+| 256 | +0.0277 | +0.0182 | +0.0240 | +0.0121 | +0.0234 | +0.0294 |
+| 512 | +0.0281 | +0.0196 | +0.0282 | +0.0138 | +0.0263 | +0.0333 |
+| **Mean** | **0.0158** | **0.0110** | **0.0175** | **0.0089** | **0.0161** | **0.0204** |
 
 **Key observations:**
-- Streaming training dramatically improves over pool-based ECFP: n=16 jumps from 0.038 (Run 2) to 0.127, confirming training diversity is the dominant factor for ECFP.
-- **n=256 drop occurs even with random IID training** (0.187 → 0.087), refuting the hypothesis that scaffold-aware episodes alone cause the large-n degradation for ECFP. The drop appears to be an ECFP prototype capacity limit — fingerprint-based prototypes saturate or over-fit the support set at large n. The GNN random run will test whether this is encoder-specific.
-- Scaffold split collapse at n=256 (0.064 → 0.007) mirrors the GNN shift-aware run — consistent across training regimes.
-- DrugOOD is weaker than GNN (assay OOD 0.017 vs 0.036) despite similar FS-Mol random-split performance — cross-assay transfer benefits from GNN's structural features.
+- **n=256 drop occurs with random IID training** (0.183 → 0.079), confirming this is an ECFP prototype capacity limit, not caused by scaffold-aware episodes.
+- **Scaffold split collapse** (0.059 at n=16, → 0.008 at n=256, → 0.006 at n=512) is consistent across all ECFP runs. The collapse is structural, not episode-type-dependent.
+- **GNN vs ECFP encoder**: at n=128, GNN random (0.226) vs ECFP random (0.183) — +0.043 from structural features. GNN also avoids the n=256 collapse (0.155 at n=512 vs ECFP 0.066).
+- **DrugOOD**: ECFP assay OOD (0.016 mean) is less than half of GNN (0.033) — structural features drive cross-dataset generalization.
 
 #### Figures
 
@@ -222,46 +256,44 @@ Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
 ### Run 4: FS-Mol GNN 10-Layer + Classification Head — Shift-Aware, Streaming
 
 > **Encoder:** 10-layer PNA GNN + CombinedReadout + ECFP + descriptor fusion → 512-dim (FS-Mol paper architecture)  
-> **Training:** Streaming from all 26,868 FS-Mol train assays. lr=1e-4, BCE loss, 16 tasks/step, 10,000 gradient steps. Binary ChEMBL labels. Sum aggregator.  
-> **Best checkpoint:** epoch 69, Val ΔAUPRC +0.2072  
-> **Evaluation:** 154 FS-Mol test assays  
+> **Training:** Streaming from all 26,868 FS-Mol train assays. lr=1e-4, BCE loss, 16 tasks/step, 10,000 gradient steps. Binary ChEMBL labels. Sum aggregator. Shift-aware scaffold episodes.  
+> **Evaluation:** 154 FS-Mol test assays. **All values are 3-seed (seed0/1/2) averages.**  
 > **Note:** Primary comparison against the FS-Mol paper. All known implementation differences fixed.
 
-#### FS-Mol Test — ΔAUPRC
+#### FS-Mol Test — ΔAUPRC (3-seed avg)
 
 | Support size | Random | Scaffold | Size |
 |---|---|---|---|
-| 16 | **0.1286** | 0.0501 | 0.1026 |
-| 32 | 0.1558 | 0.0532 | 0.1236 |
-| 64 | 0.1830 | 0.0515 | 0.1418 |
-| 128 | **0.2221** | 0.0530 | 0.1441 |
-| 256 | 0.1507 | 0.0108 | 0.0652 |
-| 512 | 0.1527 | 0.0062 | 0.0979 |
+| 16 | **0.1275** | 0.0528 | 0.1033 |
+| 32 | 0.1551 | 0.0520 | 0.1225 |
+| 64 | 0.1836 | 0.0517 | 0.1423 |
+| 128 | **0.2201** | 0.0517 | 0.1444 |
+| 256 | 0.1519 | 0.0145 | 0.0711 |
+| 512 | 0.1574 | 0.0083 | 0.1067 |
 
-**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.017 across 153 assays.
+**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.021 across 153 assays.
 
-#### DrugOOD — ΔAUPRC (IC50)
+#### DrugOOD — ΔAUPRC (IC50, 3-seed avg)
 
 | Context size | Scaffold OOD | Scaffold IID | Size OOD | Size IID | Assay OOD | Assay IID |
 |---|---|---|---|---|---|---|
-| 16 | +0.0000 | +0.0000 | +0.0219 | +0.0042 | +0.0130 | +0.0235 |
-| 32 | +0.0137 | +0.0099 | +0.0098 | +0.0051 | +0.0096 | +0.0205 |
-| 64 | +0.0076 | +0.0165 | +0.0017 | +0.0031 | +0.0296 | +0.0474 |
-| 128 | +0.0356 | +0.0316 | +0.0146 | +0.0116 | +0.0509 | +0.0630 |
-| 256 | +0.0482 | +0.0413 | +0.0456 | +0.0318 | +0.0534 | +0.0680 |
-| 512 | +0.0531 | +0.0463 | +0.0536 | +0.0372 | +0.0602 | +0.0747 |
-| **Mean** | **0.0264** | **0.0243** | **0.0245** | **0.0155** | **0.0361** | **0.0495** |
+| 16 | +0.0000 | +0.0000 | +0.0236 | +0.0077 | +0.0093 | +0.0243 |
+| 32 | +0.0205 | +0.0101 | +0.0090 | +0.0073 | +0.0124 | +0.0260 |
+| 64 | +0.0215 | +0.0168 | +0.0100 | +0.0044 | +0.0339 | +0.0528 |
+| 128 | +0.0398 | +0.0301 | +0.0163 | +0.0115 | +0.0477 | +0.0619 |
+| 256 | +0.0436 | +0.0380 | +0.0353 | +0.0296 | +0.0492 | +0.0672 |
+| 512 | +0.0461 | +0.0441 | +0.0450 | +0.0355 | +0.0571 | +0.0740 |
+| **Mean** | **0.0286** | **0.0232** | **0.0232** | **0.0160** | **0.0349** | **0.0510** |
 
 **Key observations:**
-- **At n=16, matches FS-Mol paper** (0.129 vs paper 0.126). **At n=128, exceeds paper** (0.222 vs 0.201). The label binarisation fix was the dominant factor — the old run achieved only 0.028 at n=16.
-- Performance peaks at n=128 then drops to 0.151 at n=256 (paper continues to 0.226). Run 3 (ECFP random) shows the n=256 drop also occurs with IID training for ECFP, so the GNN random run is needed to isolate whether scaffold-aware episodes cause the GNN's n=256 drop specifically.
-- **Scaffold split collapse at large n** (0.050 → 0.006 from n=16 to n=512) is the core thesis finding — scaffold OOD uniquely breaks prototypical networks as support size grows, and this holds across all runs regardless of episode type.
-- Size split shows intermediate behaviour, peaking at n=128 (0.144) then declining — partially affected by the same scaffold-specialisation effect.
-- DrugOOD assay OOD is best among all runs (0.036 mean) — full training distribution teaches cross-assay transfer.
+- **At n=16, matches FS-Mol paper** (0.128 vs paper 0.126). **At n=128, exceeds paper** (0.220 vs 0.201). The label binarisation fix was the dominant factor.
+- **Scaffold split flat then collapses** (0.053 at n=128 → 0.008 at n=512) — identical pattern to GNN random (Run 5), confirming the collapse is intrinsic to prototype-based inference under scaffold OOD, not a training-episode artefact.
+- **Shift-aware vs random training**: scaffold-split ΔAUPRC is essentially identical between Run 4 and Run 5 at n≤128. The episode type does not resolve the scaffold OOD failure.
+- DrugOOD assay OOD (0.035 mean) is the strongest cross-dataset transfer signal among all runs.
 
 #### Figures
 
-**Figure 2(a) — ΔAUPRC vs support size:**
+**Figure 2(a) — ΔAUPRC vs support size (3-seed avg):**
 ![FS-Mol line plot](../../outputs/figures/fsmol_gnn_classification_shift_aware/fig2a_fsmol_line_plot.png)
 
 **Figure 2(b) — Per-assay ΔAUPRC distribution:**
@@ -269,6 +301,57 @@ Four runs completed. A fifth (`fsmol_gnn_classification_random`) is pending.
 
 **Figure 3 — DrugOOD ΔAUPRC vs context size:**
 ![DrugOOD line plot](../../outputs/figures/fsmol_gnn_classification_shift_aware/fig3_drugood_line_plot.png)
+
+---
+
+### Run 5: FS-Mol GNN 10-Layer + Classification Head — Random, Streaming
+
+> **Encoder:** 10-layer PNA GNN + CombinedReadout + ECFP + descriptor fusion → 512-dim (FS-Mol paper architecture)  
+> **Training:** Streaming from all 26,868 FS-Mol train assays. lr=1e-4, BCE loss, 16 tasks/step, 10,000 gradient steps. Binary ChEMBL labels. **Random IID episodes** (paper-matching protocol).  
+> **Evaluation:** 154 FS-Mol test assays. **All values are 3-seed (seed0/1/2) averages.**  
+> **Note:** Paired with Run 4 to isolate the effect of episode type on scaffold OOD. Paired with Run 3 (ECFP random) to isolate the effect of encoder.
+
+#### FS-Mol Test — ΔAUPRC (3-seed avg)
+
+| Support size | Random | Scaffold | Size |
+|---|---|---|---|
+| 16 | **0.1299** | 0.0514 | 0.1071 |
+| 32 | 0.1576 | 0.0525 | 0.1282 |
+| 64 | 0.1883 | 0.0524 | 0.1491 |
+| 128 | **0.2262** | 0.0513 | 0.1526 |
+| 256 | 0.1546 | 0.0121 | 0.0747 |
+| 512 | 0.1659 | 0.0094 | 0.1067 |
+
+**Inside-task OOD (scaffold split, n_support=16):** Mean ΔAUPRC = 0.020 across 153 assays.
+
+#### DrugOOD — ΔAUPRC (IC50, 3-seed avg)
+
+| Context size | Scaffold OOD | Scaffold IID | Size OOD | Size IID | Assay OOD | Assay IID |
+|---|---|---|---|---|---|---|
+| 16 | +0.0000 | +0.0000 | +0.0177 | +0.0095 | +0.0024 | +0.0152 |
+| 32 | +0.0166 | +0.0105 | +0.0111 | +0.0090 | +0.0043 | +0.0146 |
+| 64 | +0.0154 | +0.0165 | +0.0195 | +0.0100 | +0.0337 | +0.0496 |
+| 128 | +0.0350 | +0.0308 | +0.0240 | +0.0147 | +0.0478 | +0.0616 |
+| 256 | +0.0391 | +0.0378 | +0.0421 | +0.0312 | +0.0506 | +0.0681 |
+| 512 | +0.0443 | +0.0457 | +0.0510 | +0.0363 | +0.0592 | +0.0755 |
+| **Mean** | **0.0251** | **0.0236** | **0.0276** | **0.0185** | **0.0330** | **0.0474** |
+
+**Key observations:**
+- **Random split slightly stronger than shift-aware** at n=128 (0.226 vs 0.220) and n=256 (0.155 vs 0.152) — IID training gives marginally better IID evaluation, as expected.
+- **Scaffold split is identical to Run 4** (0.051 at n=16, 0.009–0.012 at n=256/512). Episode type does not help with scaffold OOD. This is the key negative result — shift-aware training does NOT fix scaffold-split collapse.
+- **GNN vs ECFP on random split**: GNN random (0.226 at n=128) vs ECFP random (0.187 at n=128) — GNN encoder adds +0.039 ΔAUPRC at peak and avoids the large-n collapse (0.166 at n=512 vs ECFP 0.074). The structural encoder matters for scaling.
+- **DrugOOD**: assay OOD (0.033 mean) slightly lower than shift-aware GNN (0.035). Shift-aware episodes provide marginal benefit for cross-dataset transfer.
+
+#### Figures
+
+**Figure 2(a) — ΔAUPRC vs support size (3-seed avg):**
+![FS-Mol line plot](../../outputs/figures/fsmol_gnn_classification_random/fig2a_fsmol_line_plot.png)
+
+**Figure 2(b) — Per-assay ΔAUPRC distribution:**
+![FS-Mol boxplot](../../outputs/figures/fsmol_gnn_classification_random/fig2b_fsmol_boxplot.png)
+
+**Figure 3 — DrugOOD ΔAUPRC vs context size:**
+![DrugOOD line plot](../../outputs/figures/fsmol_gnn_classification_random/fig3_drugood_line_plot.png)
 
 ---
 
@@ -310,3 +393,74 @@ PTN marginally best on random; KR-Tanimoto catastrophically overfits on scaffold
 - kNN and KR-Tanimoto outperform PTN (ECFP regression) on random split — raw ECFP retrieval beats the learned embedding for this head.
 - PTN does not outperform raw ECFP baselines for the regression head — the classification head and GNN encoder are both improvements.
 - On scaffold split, all ECFP-based methods cluster together — the representation limits cross-scaffold transfer regardless of prediction method.
+
+---
+
+### RF Baseline (`rf_baseline.py`)
+
+> **Method:** `RandomForestClassifier` trained fresh on each context set. No episode structure or meta-training. Fixed params: n_estimators=100, max_depth=10, max_features="sqrt", min_samples_leaf=2.  
+> **Purpose:** Lower bound / ceiling for ECFP features under scaffold OOD. If RF > ProtoNet, the bottleneck is embedding similarity geometry, not feature expressivity.
+
+#### FS-Mol Test — Mean ΔAUPRC (5 repeats per assay)
+
+**Scaffold split:**
+
+| Support size | RF baseline | GNN ProtoNet | ECFP ProtoNet | N assays (RF) |
+|---|---|---|---|---|
+| 16 | 0.079 | 0.051 | 0.058 | 150 |
+| 32 | 0.101 | 0.053 | 0.053 | 153 |
+| 64 | 0.129 | 0.052 | 0.054 | 152 |
+| 128 | **0.182** | 0.051 | 0.059 | 146 |
+| 256 | 0.134 | 0.012 | 0.008 | 28 |
+| 512 | 0.187 | 0.009 | 0.006 | 11 |
+
+**Random split:**
+
+| Support size | RF baseline | N assays |
+|---|---|---|
+| 16 | 0.094 | 153 |
+| 32 | 0.122 | 153 |
+| 64 | 0.152 | 152 |
+| 128 | 0.194 | 147 |
+| 256 | 0.154 | 29 |
+| 512 | 0.187 | 11 |
+
+> N assays drops at n=256/512 because only large assays can provide that many support molecules — small-N means these estimates have high variance.
+
+**Key findings:**
+- **RF scaffold n=128 (0.182) beats all ProtoNet variants (0.051–0.059)**. At n=128, a fresh per-task RF without any meta-learning is 3× better than ProtoNet on scaffold OOD.
+- **ProtoNet scaffold split collapses at n=256 (0.008–0.012)**; RF stays at 0.134–0.187. The collapse is specific to prototype-based inference, not a data or feature limitation.
+- **At n=16 RF is competitive but slightly weaker** (0.079 vs 0.051–0.058) — with only 16 training samples RF is underpowered; ProtoNet benefits from the globally meta-learned embedding at low n.
+- **Conclusion:** The bottleneck under scaffold OOD is not ECFP feature expressivity but the prototype distance mechanism. As support size grows, the prototype increasingly reflects context-scaffold chemistry rather than generalizable activity signal, causing systematic drift from the query distribution.
+
+#### Figures
+
+**Scaffold split — RF vs ProtoNet:**
+![RF vs ProtoNet scaffold](../../outputs/figures/data_analysis/fig_rf_vs_protonet_scaffold.png)
+
+**Random split — RF vs ProtoNet:**
+![RF vs ProtoNet random](../../outputs/figures/data_analysis/fig_rf_vs_protonet_random.png)
+
+---
+
+## Comparison Figures — All Models
+
+Generated by `Analysis/model/plot_multi_seed.py --all`. All ProtoNet results are 3-seed averages. RF baseline is included when `rf_baseline_results.csv` is present.
+
+### Random Split vs Scaffold Split (Thesis Main Figure)
+
+Side-by-side: the same models on IID vs scaffold OOD evaluation. Quantifies the split-type gap.
+
+![Random vs Scaffold comparison](../../outputs/figures/data_analysis/fig_comparison_random_vs_scaffold.png)
+
+### Random Split — All Models
+
+![All models random](../../outputs/figures/data_analysis/fig_comparison_random.png)
+
+### Scaffold OOD Split — All Models
+
+![All models scaffold](../../outputs/figures/data_analysis/fig_comparison_scaffold.png)
+
+### DrugOOD Assay OOD — All Models
+
+![All models DrugOOD](../../outputs/figures/data_analysis/fig_comparison_drugood_assay.png)

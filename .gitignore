@@ -1,9 +1,13 @@
 # Data (too large for git)
 /data/
 
-# Model checkpoints
-# checkpoints/
-# outputs/
+# Model checkpoints and generated outputs
+checkpoints/
+outputs/
+
+# Temp analysis scripts
+Analysis/data/temp_*.py
+Analysis/data/results/
 
 # Python
 __pycache__/
@@ -33,6 +37,7 @@ Thumbs.db
 # Misc
 *.log
 *.tmp
+# *.out
 
 *.csv
 

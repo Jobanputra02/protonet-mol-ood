@@ -97,7 +97,7 @@ def _make_loaders(encoder, train_files, val_files,
 
     train_loader = DataLoader(
         train_dataset, batch_size=train_batch_size, shuffle=False,
-        num_workers=4, pin_memory=not is_gnn, prefetch_factor=4,
+        num_workers=6, pin_memory=not is_gnn, prefetch_factor=4,
         collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
         persistent_workers=True,
     )

@@ -90,36 +90,42 @@ Run 1 is kept as a legacy ECFP regression baseline. Runs 2–4 all stream from t
 
 All values are mean ΔAUPRC on the FS-Mol held-out test set (157 assays after filtering, 5 repeats per assay per support size). Seeded runs report mean ± std over 3 independent seeds (0, 1, 2). Single-seed runs are legacy baselines.
 
-> **N-assay note:** At n=256 only 29/154 qualifying assays remain (need ≥256 molecules after filtering); at n=512 only 11. These smaller subsets are harder large-assays — the drop at n=256/512 partly reflects assay selection bias, not model failure. N is reported alongside each result.
+> **N-assay note:** At n=256 only 29/154 qualifying assays remain (need ≥256 molecules after filtering); at n=512 only 11. These smaller subsets are harder large-assays - the drop at n=256/512 partly reflects assay selection bias, not model failure. N is reported alongside each result.
 
 ---
 
-### FS-Mol Test — Mean ΔAUPRC (Random Split)
+### FS-Mol Test - Mean ΔAUPRC (Random Split)
 
 | Model | Seeds | n=16 (N=154) | n=32 (N=154) | n=64 (N=153) | n=128 (N=148) | n=256 (N=29) | n=512 (N=11) | Best val ΔAUPRC |
 |---|---|---|---|---|---|---|---|---|
+| *RF baseline (per-task, fixed params)* | - | *0.094* | *0.122* | *0.152* | *0.194* | *0.154* | *0.187* | *-* |
 | ECFP · regression · shift-aware *(legacy)* | 1 | 0.028 | 0.033 | 0.041 | 0.062 | 0.065 | 0.056 | RMSE 0.527 |
-| ECFP · classification · shift-aware | 1 | 0.118 | 0.138 | 0.155 | 0.182 | 0.087 | 0.060 | +0.172 |
+| **ECFP · classification · shift-aware** | **3** | **0.121 ± 0.001** | **0.137 ± 0.001** | **0.158 ± 0.001** | **0.181 ± 0.003** | **0.078 ± 0.013** | **0.068 ± 0.009** | **+0.166 ± 0.005** |
 | **ECFP · classification · random** | **3** | **0.123 ± 0.002** | **0.139 ± 0.001** | **0.157 ± 0.002** | **0.183 ± 0.001** | **0.076 ± 0.002** | **0.066 ± 0.005** | **+0.173 ± 0.002** |
-| FS-Mol GNN · classification · shift-aware | 1 | 0.129 | 0.156 | 0.183 | 0.222 | 0.151 | 0.153 | +0.207 |
+| **FS-Mol GNN · classification · shift-aware** | **3** | **0.127 ± 0.002** | **0.155 ± 0.001** | **0.184 ± 0.001** | **0.220 ± 0.000** | **0.152 ± 0.003** | **0.157 ± 0.003** | **+0.208 ± 0.002** |
 | **FS-Mol GNN · classification · random** | **3** | **0.130 ± 0.001** | **0.158 ± 0.001** | **0.188 ± 0.002** | **0.226 ± 0.001** | **0.149 ± 0.001** | **0.166 ± 0.003** | **+0.215 ± 0.004** |
-| *FS-Mol paper (GNN + ProtoNet)* | — | *0.126* | *—* | *0.185* | *0.201* | *0.226* | *—* | *—* |
+| *FS-Mol paper (GNN + ProtoNet)* | - | *0.126* | *-* | *0.185* | *0.201* | *0.226* | *-* | *-* |
 
-### FS-Mol Test — Mean ΔAUPRC (Scaffold Split)
+> **RF baseline:** per-task RandomForestClassifier (n\_estimators=100, max\_depth=10, max\_features="sqrt", min\_samples\_leaf=2) on 2048-bit ECFP fingerprints. No meta-learning - trained fresh on each context set. N=153/147 assays at n=16/128 (slightly fewer than ProtoNet due to stricter class-balance check).
+
+### FS-Mol Test - Mean ΔAUPRC (Scaffold Split)
 
 | Model | Seeds | n=16 | n=32 | n=64 | n=128 | n=256 (N=29) | n=512 (N=11) |
 |---|---|---|---|---|---|---|---|
+| *RF baseline (per-task, fixed params)* | - | *0.079* | *0.101* | *0.129* | *0.182* | *0.135* | *0.189* |
 | ECFP · regression · shift-aware *(legacy)* | 1 | 0.018 | 0.018 | 0.019 | 0.019 | 0.003 | −0.003 |
-| ECFP · classification · shift-aware | 1 | 0.057 | 0.053 | 0.053 | 0.058 | 0.008 | 0.001 |
+| **ECFP · classification · shift-aware** | **3** | **0.057 ± 0.007** | **0.054 ± 0.006** | **0.051 ± 0.006** | **0.057 ± 0.008** | **0.005 ± 0.001** | **0.001 ± 0.008** |
 | **ECFP · classification · random** | **3** | **0.058 ± 0.005** | **0.053 ± 0.005** | **0.054 ± 0.006** | **0.059 ± 0.004** | **0.008 ± 0.003** | **0.006 ± 0.001** |
-| FS-Mol GNN · classification · shift-aware | 1 | 0.050 | 0.053 | 0.052 | 0.053 | 0.011 | 0.006 |
+| **FS-Mol GNN · classification · shift-aware** | **3** | **0.053 ± 0.003** | **0.052 ± 0.002** | **0.052 ± 0.003** | **0.052 ± 0.003** | **0.014 ± 0.001** | **0.008 ± 0.002** |
 | **FS-Mol GNN · classification · random** | **3** | **0.051 ± 0.001** | **0.053 ± 0.001** | **0.052 ± 0.001** | **0.051 ± 0.001** | **0.012 ± 0.003** | **0.010 ± 0.003** |
 
-### FS-Mol Test — Mean ΔAUPRC (Size Split)
+### FS-Mol Test - Mean ΔAUPRC (Size Split)
 
 | Model | Seeds | n=16 | n=32 | n=64 | n=128 | n=256 (N=29) | n=512 (N=11) |
 |---|---|---|---|---|---|---|---|
+| **ECFP · classification · shift-aware** | **3** | **0.104 ± 0.001** | **0.120 ± 0.002** | **0.130 ± 0.001** | **0.128 ± 0.002** | **0.031 ± 0.009** | **0.042 ± 0.009** |
 | **ECFP · classification · random** | **3** | **0.106 ± 0.003** | **0.120 ± 0.002** | **0.129 ± 0.001** | **0.131 ± 0.001** | **0.034 ± 0.004** | **0.040 ± 0.009** |
+| **FS-Mol GNN · classification · shift-aware** | **3** | **0.103 ± 0.001** | **0.122 ± 0.004** | **0.142 ± 0.004** | **0.144 ± 0.004** | **0.071 ± 0.002** | **0.107 ± 0.004** |
 | **FS-Mol GNN · classification · random** | **3** | **0.107 ± 0.002** | **0.128 ± 0.001** | **0.149 ± 0.002** | **0.153 ± 0.002** | **0.075 ± 0.001** | **0.107 ± 0.003** |
 
 ### Inside-Task OOD and DrugOOD
@@ -129,9 +135,9 @@ Inside-task OOD: support and query from different scaffold groups within the sam
 | Model | Seeds | Inside-task | DrugOOD assay | DrugOOD scaffold | DrugOOD size |
 |---|---|---|---|---|---|
 | ECFP · regression · shift-aware *(legacy)* | 1 | 0.041 | 0.008 | 0.000 | 0.016 |
-| ECFP · classification · shift-aware | 1 | 0.018 | 0.016 | 0.011 | 0.014 |
+| **ECFP · classification · shift-aware** | **3** | **0.021 ± 0.000** | **0.015 ± 0.007** | **0.004 ± 0.004** | **0.006 ± 0.002** |
 | **ECFP · classification · random** | **3** | **0.018 ± 0.001** | **0.016 ± 0.005** | **0.016 ± 0.003** | **0.018 ± 0.006** |
-| FS-Mol GNN · classification · shift-aware | 1 | 0.017 | 0.036 | 0.026 | 0.025 |
+| **FS-Mol GNN · classification · shift-aware** | **3** | **0.021 ± 0.001** | **0.043 ± 0.003** | **0.026 ± 0.005** | **0.020 ± 0.002** |
 | **FS-Mol GNN · classification · random** | **3** | **0.018 ± 0.001** | **0.033 ± 0.002** | **0.025 ± 0.002** | **0.028 ± 0.003** |
 
 ### Per-Seed Breakdown (3-Seed Runs)
@@ -145,6 +151,15 @@ Inside-task OOD: support and query from different scaffold groups within the sam
 | 2 | +0.1725 | ep 100 (full) | 0.124 | 0.182 | 0.061 |
 | **mean ± std** | **+0.173 ± 0.002** | | **0.123 ± 0.002** | **0.183 ± 0.001** | **0.059 ± 0.004** |
 
+**ECFP · classification · shift-aware**
+
+| Seed | Best val ΔAUPRC | Stopped | n=16 | n=128 (random) | n=128 (scaffold) |
+|---|---|---|---|---|---|
+| 0 | +0.1615 | ep 43 (early stop) | 0.122 | 0.184 | 0.048 |
+| 1 | +0.1659 | ep 50 (early stop) | 0.122 | 0.181 | 0.062 |
+| 2 | +0.1719 | ep 88 (early stop) | 0.119 | 0.178 | 0.062 |
+| **mean ± std** | **+0.166 ± 0.005** | | **0.121 ± 0.001** | **0.181 ± 0.003** | **0.057 ± 0.008** |
+
 **FS-Mol GNN · classification · random**
 
 | Seed | Best val ΔAUPRC | Stopped | n=16 | n=128 (random) | n=128 (scaffold) |
@@ -154,20 +169,31 @@ Inside-task OOD: support and query from different scaffold groups within the sam
 | 2 | +0.2190 | ep 100 (full) | 0.130 | 0.225 | 0.053 |
 | **mean ± std** | **+0.215 ± 0.004** | | **0.130 ± 0.001** | **0.226 ± 0.001** | **0.051 ± 0.001** |
 
+**FS-Mol GNN · classification · shift-aware**
+
+| Seed | Best val ΔAUPRC | Stopped | n=16 | n=128 (random) | n=128 (scaffold) |
+|---|---|---|---|---|---|
+| 0 | +0.2091 | ep 100 (full) | 0.129 | 0.220 | 0.055 |
+| 1 | +0.2053 | ep 100 (full) | 0.127 | 0.220 | 0.052 |
+| 2 | +0.2091 | ep 100 (full) | 0.126 | 0.220 | 0.049 |
+| **mean ± std** | **+0.208 ± 0.002** | | **0.127 ± 0.002** | **0.220 ± 0.000** | **0.052 ± 0.003** |
+
 ---
 
 ### Key Observations
 
-- **GNN random is the best model overall**: FS-Mol GNN (random episodes, 3 seeds) peaks at ΔAUPRC **0.226 ± 0.001** at n=128, exceeding the FS-Mol paper's 0.201 at that support size and matching the paper's n=256 number (0.226) one step earlier.
+- **GNN random is the best model on FS-Mol**: FS-Mol GNN (random episodes, 3 seeds) peaks at ΔAUPRC **0.226 ± 0.001** at n=128, exceeding the FS-Mol paper's 0.201 at that support size and matching the paper's n=256 number (0.226) one step earlier.
+- **Episode type (shift-aware vs random) barely affects FS-Mol test score**: ECFP shift-aware 0.181 ± 0.003 vs ECFP random 0.183 ± 0.001 at n=128; GNN shift-aware 0.220 ± 0.000 vs GNN random 0.226 ± 0.001. The gain from richer encoder architecture dominates any episode-type effect.
+- **Shift-aware training improves DrugOOD cross-dataset generalisation**: GNN shift-aware achieves 0.043 ± 0.003 on DrugOOD assay OOD vs GNN random 0.033 ± 0.002 — a ~30% gain. Training on scaffold-OOD episodes transfers to cross-dataset OOD even when it barely moves the FS-Mol in-distribution score.
 - **GNN maintains performance at large n**: GNN random holds 0.149 at n=256 and 0.166 at n=512, whereas ECFP random collapses to 0.076 and 0.066. The GNN's structural representations are robust to the large-support regime; ECFP prototypes degrade.
-- **Episode type (shift-aware vs random) has minimal effect on FS-Mol score**: ECFP shift-aware (0.182 at n=128) ≈ ECFP random (0.183 ± 0.001). GNN shift-aware (0.222) ≈ GNN random (0.226 ± 0.001). The gain from richer encoder architecture dominates any episode-type effect.
 - **Streaming over all 26k assays matters enormously**: ECFP pool-based (Run 1, ~62 assays) reaches 0.062 at n=128; ECFP streaming (any episode type) reaches ~0.183 — a 3× gain purely from training data diversity.
-- **Scaffold split is universally hard**: All models collapse at n=256 for scaffold split (~0.008–0.012). ECFP and GNN random perform similarly on scaffold split (~0.051–0.059 at n=16/128), so scaffold OOD is a shared bottleneck not resolved by encoder choice alone.
-- **GNN DrugOOD assay OOD is clearly better**: GNN random assay OOD 0.033 ± 0.002 vs ECFP random 0.016 ± 0.005 — roughly 2× gain. Structural features transfer better across assay boundaries than fingerprints.
-- **Low variance across seeds**: For both models, std ≤ 0.004 across all support sizes on random split. The experiments are reproducible and the means are reliable.
-- **n=256/512 drop is partially assay selection bias**: At n=256 only 29 qualifying assays remain (vs 154 at n=16). These 29 large assays are harder — the drop reflects both a harder subset and (for ECFP) a genuine representation limit. GNN's smaller drop confirms it handles large support better, not that the subset changes.
+- **RF baseline reveals ProtoNet's scaffold OOD failure**: On random split, GNN ProtoNet (0.226 at n=128) clearly beats RF (0.194) — meta-learning adds value when context and query share scaffolds. On scaffold split, the picture reverses: RF (0.182 at n=128) outperforms all ProtoNet variants (~0.051–0.059). A per-task RF trained fresh on the context set adapts to the task's SAR directly, while ProtoNet's meta-learned embedding space fails to generalise across scaffold boundaries. This confirms scaffold OOD is a fundamental limitation of the embedding approach, not a data-size or encoder issue.
+- **Scaffold split is universally hard for ProtoNet**: All ProtoNet variants plateau at ~0.051–0.059 at n=16–128, then collapse at n=256 (~0.005–0.014). Encoder choice and episode type make negligible difference. The RF does not collapse here (0.135 at n=256), pinpointing the prototype-based inference mechanism as the bottleneck.
+- **GNN DrugOOD assay OOD is clearly better than ECFP**: GNN shift-aware 0.043 ± 0.003 vs ECFP shift-aware 0.015 ± 0.007 — roughly 3× gain. Structural features transfer better across assay boundaries than fingerprints.
+- **Low variance across seeds**: std ≤ 0.005 for all models on random split. Results are reproducible.
+- **n=256/512 drop is partially assay selection bias**: At n=256 only 29 qualifying assays remain (vs 154 at n=16). These large assays are harder — the drop reflects both a harder subset and (for ECFP) a genuine representation limit.
 
-For full per-assay distributions, per-context-size DrugOOD curves, and baseline comparisons, see [Analysis/model/README.md](Analysis/model/README.md).
+For full per-assay distributions, per-context-size DrugOOD curves, and baseline comparisons, see [Analysis/model/README.md](Analysis/model/README.md). 
 
 For dataset statistics, see [Analysis/data/README.md](Analysis/data/README.md).
 
@@ -236,3 +262,4 @@ python Analysis/data/scaffold_analysis.py
 - Stanley et al. (2021) - [FS-Mol: A Few-Shot Learning Dataset of Molecules](https://openreview.net/forum?id=701FtuyLlAd)
 - Ji et al. (2022) - [DrugOOD: Out-of-Distribution Dataset Curator and Benchmark for AI-Aided Drug Discovery](https://arxiv.org/abs/2201.09637)
 - Corso et al. (2020) - [Principal Neighbourhood Aggregation for Graph Nets](https://arxiv.org/abs/2004.05718)
+- 
