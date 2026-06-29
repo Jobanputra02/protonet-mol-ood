@@ -1,16 +1,16 @@
-"""
-Results Plotting — FS-Mol & DrugOOD
+﻿"""
+Results Plotting - FS-Mol & DrugOOD
 =====================================
 Reads CSV files produced by the evaluation pipeline and generates:
 
-  Figure 2(a): FS-Mol — mean ΔAUPRC vs support size, one line per split type
+  Figure 2(a): FS-Mol - mean ΔAUPRC vs support size, one line per split type
                (random / scaffold / size) with ±1 std error bars
-  Figure 2(b): FS-Mol — per-assay ΔAUPRC and Spearman boxplots across support sizes
-  Figure 3:    DrugOOD — Spearman and ΔAUPRC vs context size, faceted by shift type
+  Figure 2(b): FS-Mol - per-assay ΔAUPRC and Spearman boxplots across support sizes
+  Figure 3:    DrugOOD - Spearman and ΔAUPRC vs context size, faceted by shift type
 
 Input CSVs (from outputs/results/ via config.py):
-    fsmol_test_results_{run_tag}.csv  — produced by main.py
-    drugood_results_{run_tag}.csv     — produced by main.py
+    fsmol_test_results_{run_tag}.csv  - produced by main.py
+    drugood_results_{run_tag}.csv     - produced by main.py
 
 Usage:
     python analysis/model/plot_results.py --run_tag ecfp_regression_shift_aware
@@ -23,7 +23,7 @@ import sys
 import numpy as np
 import pandas as pd
 import matplotlib
-matplotlib.use("Agg")   # headless — no display required (works on HPC/server)
+matplotlib.use("Agg")   # headless - no display required (works on HPC/server)
 import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -115,7 +115,7 @@ def plot_fsmol_line(df: pd.DataFrame) -> None:
             ax.legend(fontsize=9)
 
 
-    plt.suptitle(f"FS-Mol Test Evaluation — Prototypical Network ({RUN_LABEL})",
+    plt.suptitle(f"FS-Mol Test Evaluation - Prototypical Network ({RUN_LABEL})",
                  fontsize=13, y=1.02)
     plt.tight_layout()
     out = os.path.join(RUN_FIGURES_DIR, "fig2a_fsmol_line_plot.png")
@@ -252,12 +252,12 @@ def plot_drugood_line(df: pd.DataFrame) -> None:
             ax.set_axisbelow(True)
             ax.set_xlabel("Context set size", fontsize=10)
             ax.set_ylabel(ylabel, fontsize=10)
-            ax.set_title(f"{short_name} — {ylabel}", fontsize=11)
+            ax.set_title(f"{short_name} - {ylabel}", fontsize=11)
             ax.set_xticks(sorted(sub["context_set_size"].unique()))
             if col_i == 0:
                 ax.legend(fontsize=8)
 
-    plt.suptitle(f"DrugOOD Evaluation — Prototypical Network ({RUN_LABEL})",
+    plt.suptitle(f"DrugOOD Evaluation - Prototypical Network ({RUN_LABEL})",
                  fontsize=13, y=1.02 if n_rows == 1 else 1.01)
     plt.tight_layout()
     out = os.path.join(RUN_FIGURES_DIR, "fig3_drugood_line_plot.png")
@@ -286,7 +286,7 @@ if __name__ == "__main__":
         plot_fsmol_boxplot(fsmol_df)
 
     if not os.path.exists(DRUGOOD_CSV):
-        print(f"\nDrugOOD CSV not found: {DRUGOOD_CSV} — skipping Figure 3.")
+        print(f"\nDrugOOD CSV not found: {DRUGOOD_CSV} - skipping Figure 3.")
     else:
         print(f"\nLoading DrugOOD results: {DRUGOOD_CSV}")
         drugood_df = pd.read_csv(DRUGOOD_CSV)

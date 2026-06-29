@@ -1,4 +1,4 @@
-"""
+﻿"""
 Scaffold-Activity Degeneracy Analysis
 ======================================
 For each FS-Mol training assay, answers two questions:
@@ -13,8 +13,8 @@ For each FS-Mol training assay, answers two questions:
      V=1 means scaffold perfectly determines activity.
 
 Outputs:
-    results/data_analysis/scaffold_context_query.csv   — molecule-level, role column
-    results/data_analysis/scaffold_degeneracy.csv      — per-assay Cramér's V stats
+    results/data_analysis/scaffold_context_query.csv   - molecule-level, role column
+    results/data_analysis/scaffold_degeneracy.csv      - per-assay Cramér's V stats
     figures/data_analysis/fig_scaffold_activity_corr.png
 
 Usage:
@@ -131,7 +131,7 @@ def assign_context_query(df: pd.DataFrame, n_support: int,
 
 
 # =============================================================================
-# CRAMÉR'S V — scaffold vs activity label
+# CRAMÉR'S V - scaffold vs activity label
 # =============================================================================
 
 def cramers_v(df: pd.DataFrame) -> float:
@@ -245,7 +245,7 @@ def main() -> None:
     ax.set_xlabel("Cramér's V  (scaffold group → activity label)", fontsize=11)
     ax.set_ylabel("Number of assays", fontsize=11)
     ax.set_title(
-        f"Scaffold-Activity Degeneracy — FS-Mol Training Tasks  (n={len(cv)} assays)\n"
+        f"Scaffold-Activity Degeneracy - FS-Mol Training Tasks  (n={len(cv)} assays)\n"
         "V = 0: scaffold uninformative about activity   "
         "V = 1: scaffold perfectly predicts label",
         fontsize=10,

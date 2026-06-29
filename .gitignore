@@ -3,7 +3,7 @@
 
 # Model checkpoints and generated outputs
 checkpoints/
-outputs/
+# outputs/
 
 # Temp analysis scripts
 Analysis/data/temp_*.py

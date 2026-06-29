@@ -1,12 +1,12 @@
-"""
+﻿"""
 Diagnostic Baseline Comparison
 ================================
 Compares PTN against simple baselines on the same episodes.
 
 Baselines:
-    mean          — predict mean(support_labels) for all queries      [trivial]
-    kNN (k=1,3,5) — sklearn KNeighborsRegressor on raw ECFPs
-    KR-Tanimoto   — kernel ridge regression with Tanimoto kernel
+    mean          - predict mean(support_labels) for all queries      [trivial]
+    kNN (k=1,3,5) - sklearn KNeighborsRegressor on raw ECFPs
+    KR-Tanimoto   - kernel ridge regression with Tanimoto kernel
 
 Two modes:
 
@@ -188,7 +188,7 @@ def run_one_episode(
 
 
 # =============================================================================
-# TRAIN MODE — sanity check on 100 train assays
+# TRAIN MODE - sanity check on 100 train assays
 # =============================================================================
 
 def _print_train_report(df: pd.DataFrame) -> None:
@@ -294,7 +294,7 @@ def run_train_diagnostics() -> pd.DataFrame:
 
 
 # =============================================================================
-# TEST MODE — all 154 test assays, directly comparable to evaluate_fsmol_test
+# TEST MODE - all 154 test assays, directly comparable to evaluate_fsmol_test
 # =============================================================================
 
 def run_test_diagnostics() -> pd.DataFrame:
@@ -469,12 +469,12 @@ if __name__ == "__main__":
 
     if args.mode in ("train", "both"):
         print("\n" + "=" * 70)
-        print("TRAIN MODE — sanity check on sampled train assays")
+        print("TRAIN MODE - sanity check on sampled train assays")
         print("=" * 70 + "\n")
         run_train_diagnostics()
 
     if args.mode in ("test", "both"):
         print("\n" + "=" * 70)
-        print("TEST MODE — all test assays, directly comparable to main results")
+        print("TEST MODE - all test assays, directly comparable to main results")
         print("=" * 70 + "\n")
         run_test_diagnostics()

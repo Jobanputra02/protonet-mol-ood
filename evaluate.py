@@ -1,4 +1,4 @@
-"""
+﻿"""
 Evaluation: DrugOOD OOD Benchmark
 ===================================
 Protocol (CHOSEN: zero-shot):
@@ -11,12 +11,13 @@ Protocol (CHOSEN: zero-shot):
 
 import os
 import torch
+import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 from scipy import stats
 from sklearn.metrics import average_precision_score
 from model import (PrototypicalNetworkRegression, PrototypicalNetworkClassification,
-                   ECFPEncoder, PNAGNNEncoder, FSMolGNNEncoder)
+                   ECFPEncoder, PNAGNNEncoder, FSMolGNNEncoder, _mahalanobis_dists)
 from data import DrugOODEvalDataset, AssayDataset
 
 from config import RESULTS_DIR
@@ -101,11 +102,111 @@ def _mol_input(assay: AssayDataset, indices, device: torch.device, gnn: bool,
         ).to(device)
 
 
+# =============================================================================
+# TTPA - TEST-TIME PROTOTYPE ADAPTATION
+# =============================================================================
+#
+# Why: On scaffold-split evaluation the support set is drawn from one scaffold
+# family while query molecules have novel scaffolds.  The standard ProtoNet
+# prototype (unweighted mean of support embeddings) therefore lands in the
+# embedding region of the context scaffold rather than the query scaffold.
+#
+# Fix: reweight each support molecule's contribution to the prototype by how
+# similar it is to the query molecules in fingerprint space.  Support molecules
+# whose scaffolds happen to be more similar to the query get higher weight,
+# nudging the prototype toward where the query molecules actually live.
+#
+# Weights use mean binary Tanimoto (Jaccard) over all query molecules:
+#   w_i = (1/|Q|) * sum_{q in Q} Tanimoto_bin(fp_i, fp_q)
+# where Tanimoto_bin binarises ECFP count vectors (> 0 → 1) before computing.
+#
+# Training-free: plug-and-play on any pre-trained classification checkpoint.
+# Only affects predict_from_embeddings; training loop is unchanged.
+
+def _tanimoto_weights(sup_fps: np.ndarray, qry_fps: np.ndarray) -> np.ndarray:
+    """
+    Mean binary Tanimoto similarity from each support molecule to the query set.
+
+    Args:
+        sup_fps: (n_sup, 2048) ECFP count fingerprints for support molecules
+        qry_fps: (n_qry, 2048) ECFP count fingerprints for query molecules
+    Returns:
+        weights: (n_sup,) float32 in [0, 1] - higher = more similar to query
+    """
+    sup_bin = (sup_fps > 0).astype(np.float32)   # (n_sup, 2048)
+    qry_bin = (qry_fps > 0).astype(np.float32)   # (n_qry, 2048)
+
+    dot  = sup_bin @ qry_bin.T                   # (n_sup, n_qry) intersection sizes
+    a_sz = sup_bin.sum(axis=1, keepdims=True)    # (n_sup, 1)
+    b_sz = qry_bin.sum(axis=1, keepdims=True)    # (n_qry, 1)
+    union = a_sz + b_sz.T - dot                  # (n_sup, n_qry)
+    tanimoto = dot / (union + 1e-8)              # (n_sup, n_qry)
+    return tanimoto.mean(axis=1)                 # (n_sup,)
+
+
+def _predict_ttpa(
+    sup_emb:    torch.Tensor,
+    sup_labels: torch.Tensor,
+    qry_emb:    torch.Tensor,
+    sup_fps:    np.ndarray,
+    qry_fps:    np.ndarray,
+) -> torch.Tensor:
+    """
+    ProtoNet prediction with Tanimoto-weighted prototypes (TTPA).
+
+    Prototype computation:
+      proto_active   = weighted_mean(sup_emb[active],   w[active])
+      proto_inactive = weighted_mean(sup_emb[inactive], w[inactive])
+    where w_i = mean Tanimoto(fp_i, query_fps).
+
+    Covariance for Mahalanobis distance uses the original unweighted support
+    embeddings - only the prototype centre is adapted, not the uncertainty.
+
+    Args:
+        sup_emb:    (n_sup, emb_dim) pre-encoded support embeddings (on device)
+        sup_labels: (n_sup,) binary labels 0/1
+        qry_emb:    (n_qry, emb_dim) pre-encoded query embeddings (on device)
+        sup_fps:    (n_sup, 2048) ECFP fingerprints (numpy, CPU)
+        qry_fps:    (n_qry, 2048) ECFP fingerprints (numpy, CPU)
+    Returns:
+        p_active: (n_qry,) P(active) for each query molecule
+    """
+    active_mask = sup_labels > 0.5
+    if not active_mask.any() or not (~active_mask).any():
+        return torch.full((qry_emb.shape[0],), 0.5, device=qry_emb.device)
+
+    # Tanimoto weights: (n_sup,) on device
+    w = torch.tensor(
+        _tanimoto_weights(sup_fps, qry_fps),
+        dtype=torch.float32, device=sup_emb.device,
+    )
+
+    # Weighted prototype for each class - normalise within class so weights sum to 1
+    w_act = w * active_mask.float()
+    w_act = w_act / w_act.sum().clamp(min=1e-8)
+    proto_active = (w_act.unsqueeze(1) * sup_emb).sum(0)          # (emb_dim,)
+
+    w_ina = w * (~active_mask).float()
+    w_ina = w_ina / w_ina.sum().clamp(min=1e-8)
+    proto_inactive = (w_ina.unsqueeze(1) * sup_emb).sum(0)        # (emb_dim,)
+
+    protos = torch.stack([proto_active, proto_inactive], dim=0)    # (2, emb_dim)
+
+    # Mahalanobis distance uses the original sup_emb for covariance estimation
+    dists = _mahalanobis_dists(qry_emb, protos, sup_emb, active_mask)
+    return F.softmax(-dists, dim=1)[:, 0]
+
+
+def _get_fps(assay: AssayDataset, indices) -> np.ndarray:
+    """Stack ECFP fingerprints from assay for given indices. Returns (n, 2048) float32."""
+    return np.stack([assay.fingerprints[i] for i in indices]).astype(np.float32)
+
+
 def _compute_metrics(preds_np, targets_np, binary_labels, is_classification: bool = False):
     """Compute all metrics for one (predictions, targets, binary_labels) triple.
 
     is_classification=True suppresses RMSE/MAE/Spearman: preds are probabilities [0,1]
-    while targets are continuous IC50 values — those distance metrics are meaningless.
+    while targets are continuous IC50 values - those distance metrics are meaningless.
     """
     if (binary_labels is not None
             and binary_labels.sum() > 0
@@ -131,7 +232,7 @@ def _compute_metrics(preds_np, targets_np, binary_labels, is_classification: boo
 
 
 # =============================================================================
-# MULTI-SCALE EVALUATION (Phase 3 — main evaluation function)
+# MULTI-SCALE EVALUATION (Phase 3 - main evaluation function)
 # =============================================================================
 
 def _smiles_to_batch(smiles_list: list[str], device: torch.device,
@@ -228,9 +329,9 @@ def evaluate_drugood_multiscale(
     """
     Evaluate across all context sizes and both query sets (ood_test + iid_test).
     Each (split × context_size × query_set) combination is run over multiple context
-    seeds and averaged — reported as mean ± std across seeds.
+    seeds and averaged - reported as mean ± std across seeds.
 
-    Returns a long-form DataFrame — one row per (split_type × context_size × query_set):
+    Returns a long-form DataFrame - one row per (split_type × context_size × query_set):
         index | split_type | query_set | context_set_size | actual_context_n | n_test
               | delta_auprc | delta_auprc_std | rmse | rmse_std | mae | spearman
     """
@@ -244,7 +345,7 @@ def evaluate_drugood_multiscale(
         for eval_dataset in eval_datasets:
             # ------------------------------------------------------------------
             # GNN: pre-featurize all context molecules and pre-encode both query
-            # sets ONCE per dataset — amortizes RDKit + GNN cost across all
+            # sets ONCE per dataset - amortizes RDKit + GNN cost across all
             # (context_size × query_set × seed) combinations (~24× fewer passes)
             # ------------------------------------------------------------------
             if gnn:
@@ -331,7 +432,7 @@ def evaluate_drugood_multiscale(
 
                     print(
                         f"{eval_dataset.split_type:35s} | ctx={context_size:4d} | "
-                        f"{query_set:8s} | ΔAUPRC: {mean_m['delta_auprc']:+.4f}±{std_m['delta_auprc']:.4f} | "
+                        f"{query_set:8s} | dAUPRC: {mean_m['delta_auprc']:+.4f}+/-{std_m['delta_auprc']:.4f} | "
                         f"RMSE: {mean_m['rmse']:.4f} | Spearman: {mean_m['spearman']:.4f}"
                     )
 
@@ -370,7 +471,7 @@ def _build_encoder_from_config(config: dict, device: torch.device) -> torch.nn.M
             embedding_dim=embedding_dim,
             deg=deg,
         )
-    else:  # ecfp (default — handles old checkpoints without encoder_type key)
+    else:  # ecfp (default - handles old checkpoints without encoder_type key)
         encoder = ECFPEncoder(
             input_dim=2048,
             hidden_dim=config.get("hidden_dim", 512),
@@ -433,6 +534,7 @@ def evaluate_inside_task_ood(
     n_support: int = 16,
     n_episodes_per_assay: int = 10,
     seed: int = 42,
+    use_ttpa: bool = False,
 ) -> pd.DataFrame:
     """
     Inside-task OOD evaluation on FS-Mol test assays.
@@ -441,7 +543,7 @@ def evaluate_inside_task_ood(
       - Support set: n_support molecules sampled from scaffold group A
       - Query set:   n_query molecules sampled from scaffold group B (different scaffold)
     This tests whether the model can predict activity across scaffold families
-    within a single bioactivity task — the within-task OOD scenario.
+    within a single bioactivity task - the within-task OOD scenario.
 
     Assays with only 1 scaffold group are skipped (no scaffold split possible).
 
@@ -495,9 +597,17 @@ def evaluate_inside_task_ood(
                 else:
                     sup_lbl = torch.tensor(assay.labels[sup_idx], device=device)
                 qry_lbl = assay.labels[qry_idx]
-                preds   = _unwrap(model).predict_from_embeddings(
-                    all_emb[sup_idx], sup_lbl, all_emb[qry_idx]
-                ).cpu().numpy()
+
+                if use_ttpa and is_classif:
+                    preds = _predict_ttpa(
+                        all_emb[sup_idx], sup_lbl, all_emb[qry_idx],
+                        _get_fps(assay, sup_idx), _get_fps(assay, qry_idx),
+                    ).cpu().numpy()
+                else:
+                    preds = _unwrap(model).predict_from_embeddings(
+                        all_emb[sup_idx], sup_lbl, all_emb[qry_idx]
+                    ).cpu().numpy()
+
                 bin_lbl = assay.binary_labels[qry_idx] if assay.binary_labels is not None else None
                 episode_metrics.append(_compute_metrics(preds, qry_lbl, bin_lbl, is_classif))
 
@@ -520,14 +630,14 @@ def evaluate_inside_task_ood(
 
 
 # =============================================================================
-# FS-MOL TEST EVALUATION  —  3-curve line plot (Fig 2a / Fig 2b)
+# FS-MOL TEST EVALUATION  -  3-curve line plot (Fig 2a / Fig 2b)
 # =============================================================================
 
 def _encode_assay(
     model, assay: AssayDataset, device: torch.device, gnn: bool, fsmol: bool
 ) -> torch.Tensor:
     """Pre-encode every molecule in an assay. Returns (n, emb_dim) on device.
-    Call once per assay; slice embeddings per episode — eliminates repeated GNN passes."""
+    Call once per assay; slice embeddings per episode - eliminates repeated GNN passes."""
     from data import _build_fsmol_graphs_for_assay, _build_graphs_for_assay
     m = _unwrap(model)
     with torch.no_grad():
@@ -564,16 +674,17 @@ def evaluate_fsmol_test(
     seed: int = 42,
     split_type: str = "random",   # "random" | "scaffold" | "size"
     save_preds_path: str | None = None,
+    use_ttpa: bool = False,       # Test-Time Prototype Adaptation (Tanimoto-weighted prototypes)
 ) -> pd.DataFrame:
     """
-    FS-Mol test evaluation with support-size sweep — produces one curve in Fig 2a.
+    FS-Mol test evaluation with support-size sweep - produces one curve in Fig 2a.
     Call three times (split_type = "random", "scaffold", "size") for the full figure.
 
     Split types:
-        "random"   — IID baseline: support and query both drawn randomly from assay.
-        "scaffold" — inside-task scaffold OOD: support drawn from one Murcko scaffold
+        "random"   - IID baseline: support and query both drawn randomly from assay.
+        "scaffold" - inside-task scaffold OOD: support drawn from one Murcko scaffold
                      group; query = all molecules in every other scaffold group.
-        "size"     — size shift: support drawn from small molecules (bottom 50% by
+        "size"     - size shift: support drawn from small molecules (bottom 50% by
                      heavy atom count); query = all large molecules (top 50%).
 
     For each (assay, support_size), n_repeats episodes are run with different random
@@ -581,13 +692,13 @@ def evaluate_fsmol_test(
 
     Note: at large support sizes fewer assays qualify (need n_total > n_sup).
     The returned DataFrame includes an n_assays column per support_size so this
-    is transparent in reported results — do not filter post-hoc.
+    is transparent in reported results - do not filter post-hoc.
 
     Returns one row per (assay × support_size):
         assay_id | split_type | support_size | n_total | n_query
                  | delta_auprc | rmse | mae | spearman
     """
-    MIN_TASK_SIZE = 32   # must match main.py — skip assays too small after exact-filtering
+    MIN_TASK_SIZE = 32   # must match main.py - skip assays too small after exact-filtering
     min_grp = max(2, min(support_sizes) // 4)  # scaffold split: min molecules per group
 
     model.eval()
@@ -618,7 +729,7 @@ def evaluate_fsmol_test(
             usable_groups = [k for k, v in assay.scaffold_groups.items()
                              if len(v) >= min_grp]
             if len(usable_groups) < 2:
-                continue  # not enough scaffold diversity — skip assay entirely
+                continue  # not enough scaffold diversity - skip assay entirely
 
         elif split_type == "size":
             mol_sizes  = _get_mol_sizes(assay)
@@ -670,9 +781,16 @@ def evaluate_fsmol_test(
                 qry_lbl = assay.labels[qry_idx]
                 bin_lbl = (assay.binary_labels[qry_idx]
                            if assay.binary_labels is not None else None)
-                preds = _unwrap(model).predict_from_embeddings(
-                    all_emb[sup_idx], sup_lbl, all_emb[qry_idx]
-                ).cpu().numpy()
+
+                if use_ttpa and is_classif:
+                    preds = _predict_ttpa(
+                        all_emb[sup_idx], sup_lbl, all_emb[qry_idx],
+                        _get_fps(assay, sup_idx), _get_fps(assay, qry_idx),
+                    ).cpu().numpy()
+                else:
+                    preds = _unwrap(model).predict_from_embeddings(
+                        all_emb[sup_idx], sup_lbl, all_emb[qry_idx]
+                    ).cpu().numpy()
 
                 repeat_metrics.append(_compute_metrics(preds, qry_lbl, bin_lbl, is_classif))
                 last_qry_idx = qry_idx
@@ -711,7 +829,7 @@ def evaluate_fsmol_test(
 
     df = pd.DataFrame(rows)
     if df.empty:
-        print(f"\n  No rows for split_type='{split_type}' — check assay sizes / scaffold diversity.")
+        print(f"\n  No rows for split_type='{split_type}' - check assay sizes / scaffold diversity.")
         return df
 
     n_assays = df["assay_id"].nunique()

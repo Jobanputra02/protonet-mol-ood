@@ -1,21 +1,21 @@
-"""
-Chemical Diversity — FS-Mol vs DrugOOD
+﻿"""
+Chemical Diversity - FS-Mol vs DrugOOD
 ========================================
 Three complementary views of how different the two datasets are chemically:
 
-  Section 1 — Molecular properties (mass, heavy atoms, rotatable bonds, aromatic rings)
+  Section 1 - Molecular properties (mass, heavy atoms, rotatable bonds, aromatic rings)
                Side-by-side comparison: FS-Mol train/test vs DrugOOD train/ood_test
                Uses structural_variability.py for per-molecule feature computation.
 
-  Section 2 — Tanimoto distance distributions
+  Section 2 - Tanimoto distance distributions
                Internal FS-Mol, internal DrugOOD, and cross-dataset pairwise distances.
                Higher cross-distance = more OOD shift between the two corpora.
 
-  Section 3 — t-SNE visualization (ECFP4, Tanimoto/Jaccard metric)
+  Section 3 - t-SNE visualization (ECFP4, Tanimoto/Jaccard metric)
                5000 molecules per dataset, combined embedding coloured by source.
 
 Outputs saved to FIGURES_DIR / RESULTS_DIR (from config.py):
-    structural_var_comparison.csv      — mean molecular properties per dataset
+    structural_var_comparison.csv      - mean molecular properties per dataset
     tanimoto_distances.png
     tsne_fsmol_vs_drugood.png
 
@@ -265,7 +265,7 @@ if __name__ == "__main__":
     # Section 1: molecular properties (uses SMILES directly, no fingerprints)
     run_molecular_properties(fsmol_train_smi, fsmol_test_smi, drugood_train_smi, drugood_ood_smi)
 
-    # Sections 2+3 need fingerprints — compute once, share
+    # Sections 2+3 need fingerprints - compute once, share
     print("\nComputing ECFP4 fingerprints...")
     fsmol_fps   = compute_fps(fsmol_train_smi, "FS-Mol train")
     drugood_fps = compute_fps(drugood_ood_smi, "DrugOOD ood_test")

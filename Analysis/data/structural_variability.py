@@ -1,4 +1,4 @@
-"""
+﻿"""
 Structural Variability Analysis
 ================================
 For each unique compound, computes:
@@ -9,7 +9,7 @@ For each unique compound, computes:
     - Number of aromatic rings
 
 Written as a generic, reusable script.
-Input:  list of SMILES strings (from any source — FS-Mol, DrugOOD, etc.)
+Input:  list of SMILES strings (from any source - FS-Mol, DrugOOD, etc.)
 Output: pandas DataFrame, one row per unique compound
 
 Usage:
@@ -44,7 +44,7 @@ def compute_mol_features(smiles: str) -> Optional[dict]:
     if mol is None:
         return None
 
-    # Generic Murcko scaffold — ring systems + linkers, no side chains
+    # Generic Murcko scaffold - ring systems + linkers, no side chains
     # "Generic" means all atoms replaced by carbons, all bonds by single bonds
     # This groups molecules by topology rather than exact chemistry
     try:
@@ -91,7 +91,7 @@ def compute_structural_variability(
             molecular_mass, n_heavy_atoms, n_rotatable_bonds, n_aromatic_rings
     """
     if deduplicate:
-        # Canonicalize and deduplicate — different SMILES can represent same molecule
+        # Canonicalize and deduplicate - different SMILES can represent same molecule
         canonical_map = {}
         for smi in smiles_list:
             mol = Chem.MolFromSmiles(smi)  # type: ignore[attr-defined]

@@ -1,4 +1,4 @@
-"""
+﻿"""
 Episode Construction for Prototypical Network Training
 =======================================================
 An "episode" is one few-shot task:
@@ -9,7 +9,7 @@ Two episode construction strategies:
     1. RANDOM:        Support and query sampled randomly from assay.
                       Standard FS-Mol protocol.
     2. SHIFT-AWARE:   Support from one scaffold family, query from another.
-                      Forces OOD-robust embedding. USE THIS if prof confirms.
+                      Forces OOD-robust embedding for scaffold generalization.
 
 CHOSEN: shift-aware episodes (with random as fallback if scaffold info unavailable).
 """
@@ -22,7 +22,7 @@ from torch.utils.data import Dataset, DataLoader
 import numpy as np
 from typing import Optional
 
-# RDKit has incomplete type stubs — Pylance reports false positives on its
+# RDKit has incomplete type stubs - Pylance reports false positives on its
 # attributes (MolFromSmiles, GetMorganFingerprintAsBitVect, etc.).
 # These are valid at runtime; the "# type: ignore" comments suppress the
 # Pylance errors without affecting execution.
@@ -47,7 +47,7 @@ def mol_to_fingerprint(smiles: str) -> Optional[np.ndarray]:
     """
     Convert SMILES string to ECFP4 count fingerprint (2048 bits).
 
-    Returns a COUNT vector (values >= 0, not binary) — each position counts
+    Returns a COUNT vector (values >= 0, not binary) - each position counts
     how many times a circular substructure of radius ≤ 2 appears.
     This matches the precomputed "fingerprints" field in FS-Mol .jsonl.gz files.
     ECFP4 = radius 2, 2048 bits. Set on the module-level _MORGAN_GENERATOR.
@@ -115,7 +115,7 @@ class AssayDataset:
                     _binary.append(binary_labels[i])
 
         # Keep fingerprints as a plain Python list of 1D arrays.
-        # Do NOT convert to a single large numpy array here — with 26k assays
+        # Do NOT convert to a single large numpy array here - with 26k assays
         # loaded simultaneously this causes an OOM error.
         # Conversion to numpy happens lazily in _indices_to_tensors()
         # where we only ever need 16-32 rows at a time.
@@ -179,7 +179,7 @@ class EpisodeSampler:
 
     @property
     def n_support_min(self) -> int:
-        """Smallest possible support size — used for assay size gating."""
+        """Smallest possible support size - used for assay size gating."""
         if isinstance(self.n_support, (list, tuple)):
             return int(min(self.n_support))
         return int(self.n_support)
@@ -203,9 +203,9 @@ class EpisodeSampler:
 
         Returns:
             support_fp:     (n_support, 2048) float tensor
-            support_labels: (n_support,) float tensor  — binary if use_binary=True
+            support_labels: (n_support,) float tensor  - binary if use_binary=True
             query_fp:       (n_query, 2048) float tensor
-            query_labels:   (n_query,) float tensor    — binary if use_binary=True
+            query_labels:   (n_query,) float tensor    - binary if use_binary=True
         """
         if shift_aware and len(dataset.scaffold_groups) >= 2:
             return self._sample_shift_aware_episode(dataset, use_binary=use_binary)
@@ -215,7 +215,7 @@ class EpisodeSampler:
     def _sample_shift_aware_episode(self, dataset: AssayDataset, use_binary: bool = False):
         """
         Support and query come from DIFFERENT scaffold families.
-        Uses whatever molecules are available — no replacement, capped to pool size.
+        Uses whatever molecules are available - no replacement, capped to pool size.
         Falls back to random if fewer than 2 usable scaffold groups.
         """
         n_sup_target = self._draw_n_support()
@@ -229,7 +229,7 @@ class EpisodeSampler:
         support_pool = dataset.scaffold_groups[usable_keys[chosen[0]]]
         query_pool   = dataset.scaffold_groups[usable_keys[chosen[1]]]
 
-        # Cap to available pool size — no replacement, no duplication
+        # Cap to available pool size - no replacement, no duplication
         n_sup = min(n_sup_target,  len(support_pool))
         n_qry = min(self.n_query,  len(query_pool))
         sup_idx = np.random.choice(support_pool, size=n_sup, replace=False)
@@ -248,7 +248,7 @@ class EpisodeSampler:
         return self._indices_to_tensors(dataset, sup_idx, qry_idx, use_binary=use_binary)
 
     def _indices_to_tensors(self, dataset, sup_idx, qry_idx, use_binary: bool = False):
-        # fingerprints is a list of 1D numpy arrays — stack only the rows we need.
+        # fingerprints is a list of 1D numpy arrays - stack only the rows we need.
         # Must use list comprehension (not array indexing) since fingerprints is a list.
         support_fp = torch.tensor(np.stack([dataset.fingerprints[i] for i in sup_idx]))
         query_fp   = torch.tensor(np.stack([dataset.fingerprints[i] for i in qry_idx]))
@@ -263,7 +263,7 @@ class EpisodeSampler:
         return support_fp, support_labels, query_fp, query_labels
 
     # ------------------------------------------------------------------
-    # Index-only variants — used by FSMolGraphEpisodeDataset so graph
+    # Index-only variants - used by FSMolGraphEpisodeDataset so graph
     # construction can happen after index selection without duplicating
     # the sampling logic.
     # ------------------------------------------------------------------
@@ -285,7 +285,7 @@ class EpisodeSampler:
 
     def _get_episode_indices_random(self, dataset: "AssayDataset"):
         """
-        Stratified support/query split — preserves active/inactive class proportion.
+        Stratified support/query split - preserves active/inactive class proportion.
         Matches FS-Mol paper's StratifiedShuffleSplit. Falls back to pure random
         when binary labels are missing or the assay is all one class.
         """
@@ -411,7 +411,7 @@ class FSMolEpisodeDataset(Dataset):
         n_support: int = 16,
         n_query: int = 16,
         shift_aware: bool = True,
-        pool_size: int = 0,           # kept for API compatibility — ignored
+        pool_size: int = 0,           # kept for API compatibility - ignored
         use_binary_labels: bool = False,
     ):
         if not assay_files:
@@ -420,15 +420,16 @@ class FSMolEpisodeDataset(Dataset):
         self.n_episodes        = n_episodes_per_epoch
         self.n_support         = n_support
         self.n_query           = n_query
-        self.sampler           = EpisodeSampler(n_support, n_query)
-        self.shift_aware       = shift_aware
-        self.use_binary_labels = use_binary_labels
+        self.sampler             = EpisodeSampler(n_support, n_query)
+        self.shift_aware         = shift_aware
+        self.shift_aware_ratio: Optional[float] = None  # set per-epoch for annealing
+        self.use_binary_labels   = use_binary_labels
         n_sup_str = str(n_support) if isinstance(n_support, int) else f"{min(n_support)}–{max(n_support)} (variable)"
         print(f"  Streaming ECFP dataset: {len(self.all_files)} training files, "
               f"n_support={n_sup_str}")
 
     def refresh_pool(self, verbose: bool = False) -> None:
-        pass   # no-op — streaming loads fresh from disk each episode
+        pass   # no-op - streaming loads fresh from disk each episode
 
     def __len__(self) -> int:
         return self.n_episodes
@@ -438,8 +439,12 @@ class FSMolEpisodeDataset(Dataset):
             path = self.all_files[np.random.randint(len(self.all_files))]
             ds = _load_assay_file(path)
             if len(ds) >= self.sampler.n_support_min:
+                if self.shift_aware_ratio is not None:
+                    use_scaffold = np.random.random() < self.shift_aware_ratio
+                else:
+                    use_scaffold = self.shift_aware
                 return self.sampler.sample_episode(
-                    ds, shift_aware=self.shift_aware, use_binary=self.use_binary_labels
+                    ds, shift_aware=use_scaffold, use_binary=self.use_binary_labels
                 )
         raise RuntimeError("Could not find a valid assay after 200 attempts.")
 
@@ -457,7 +462,7 @@ def _build_graphs_for_assay(dataset: "AssayDataset") -> list:
     Build a PyG Data object for every molecule in `dataset` (uses SMILES from
     dataset.scaffolds).  Returns a list aligned with dataset.fingerprints/labels.
     Molecules whose SMILES yield an invalid graph get a minimal placeholder so
-    indices always match — the placeholder has zero edges and a single zero node.
+    indices always match - the placeholder has zero edges and a single zero node.
     """
     from featurize import smiles_to_graph, NODE_FEAT_DIM
     import torch
@@ -550,7 +555,7 @@ class FSMolGraphEpisodeDataset(Dataset):
         n_support: int = 16,
         n_query: int = 16,
         shift_aware: bool = True,
-        pool_size: int = 0,           # kept for API compatibility — ignored
+        pool_size: int = 0,           # kept for API compatibility - ignored
         fsmol_style: bool = False,
         use_binary_labels: bool = False,
     ):
@@ -560,10 +565,11 @@ class FSMolGraphEpisodeDataset(Dataset):
         self.n_episodes        = n_episodes_per_epoch
         self.n_support         = n_support
         self.n_query           = n_query
-        self.sampler           = EpisodeSampler(n_support, n_query)
-        self.shift_aware       = shift_aware
-        self.fsmol_style       = fsmol_style
-        self.use_binary_labels = use_binary_labels
+        self.sampler             = EpisodeSampler(n_support, n_query)
+        self.shift_aware         = shift_aware
+        self.shift_aware_ratio: Optional[float] = None  # set per-epoch for annealing
+        self.fsmol_style         = fsmol_style
+        self.use_binary_labels   = use_binary_labels
         self._setup_graph_builder()
         n_sup_str = str(n_support) if isinstance(n_support, int) else f"{min(n_support)}–{max(n_support)} (variable)"
         print(f"  Streaming GNN dataset: {len(self.all_files)} training files, "
@@ -593,11 +599,11 @@ class FSMolGraphEpisodeDataset(Dataset):
             )
 
     def _build_graphs(self, smiles_list: list[str]) -> list:
-        """Build graphs for a list of SMILES — only the selected episode molecules."""
+        """Build graphs for a list of SMILES - only the selected episode molecules."""
         return [self._smiles_to_graph(smi) or self._dummy for smi in smiles_list]
 
     def refresh_pool(self, verbose: bool = False) -> None:
-        pass  # no-op — streaming loads fresh from disk each episode
+        pass  # no-op - streaming loads fresh from disk each episode
 
     def __len__(self) -> int:
         return self.n_episodes
@@ -608,7 +614,11 @@ class FSMolGraphEpisodeDataset(Dataset):
             ds = _load_assay_file(path)
             if len(ds) < self.sampler.n_support_min:
                 continue
-            if self.shift_aware and len(ds.scaffold_groups) >= 2:
+            if self.shift_aware_ratio is not None:
+                use_scaffold = np.random.random() < self.shift_aware_ratio
+            else:
+                use_scaffold = self.shift_aware
+            if use_scaffold and len(ds.scaffold_groups) >= 2:
                 sup_idx, qry_idx = self.sampler._get_episode_indices_shift_aware(ds)
             else:
                 sup_idx, qry_idx = self.sampler._get_episode_indices_random(ds)
@@ -660,7 +670,7 @@ class DrugOODEvalDataset:
         self.ood_test_smiles = ood_test_smiles
         self.iid_test_smiles = iid_test_smiles
 
-        # Full context pool — subsampled at episode time
+        # Full context pool - subsampled at episode time
         self.context_fp     = torch.tensor(np.stack(ctx_ds.fingerprints))
         self.context_labels = torch.tensor(ctx_ds.labels)
         self.context_binary = np.array(context_binary_labels, dtype=np.int32) \

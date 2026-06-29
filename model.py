@@ -1,13 +1,13 @@
-"""
+﻿"""
 Prototypical Network for Molecular Property Prediction
 =======================================================
 Encoders (choose one, pass to the head at construction time):
-  ECFPEncoder     — ECFP4 2048-bit fingerprint + 3-layer MLP
-  PNAGNNEncoder   — Principal Neighbourhood Aggregation GNN (FS-Mol paper)
+  ECFPEncoder     - ECFP4 2048-bit fingerprint + 3-layer MLP
+  PNAGNNEncoder   - Principal Neighbourhood Aggregation GNN (FS-Mol paper)
 
 Heads (encoder-agnostic, work with any encoder above):
-  PrototypicalNetworkRegression    — kernel regression, MSE loss     (Part 0)
-  PrototypicalNetworkClassification — true PN binary classification,
+  PrototypicalNetworkRegression    - kernel regression, MSE loss     (Part 0)
+  PrototypicalNetworkClassification - true PN binary classification,
                                       BCE loss                        (Part A)
 
 Distance function: squared Euclidean (≡ cosine on L2-normalised unit sphere).
@@ -160,7 +160,7 @@ def euclidean_distance(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """
     Computes pairwise squared Euclidean distances between two sets of vectors.
 
-    CHOSEN: Euclidean distance — no extra parameters, standard in ProtoNets.
+    CHOSEN: Euclidean distance - no extra parameters, standard in ProtoNets.
 
     ALTERNATIVE (learned distance via MLP):
     # class LearnedDistance(nn.Module):
@@ -216,7 +216,7 @@ def _mahalanobis_dists(
     """
     FS-Mol Mahalanobis distance from each query to [proto_active, proto_inactive].
 
-    Shrinkage per class k — exact FS-Mol paper values:
+    Shrinkage per class k - exact FS-Mol paper values:
       λ_k = min(n_k / (n_k + 1), 0.1)
       Σ_k = λ_k · cov(class_k) + (1 − λ_k) · cov(task) + 0.1 · I
       d(q, k) = (q − μ_k)ᵀ Σ_k⁻¹ (q − μ_k)
@@ -227,7 +227,7 @@ def _mahalanobis_dists(
 
     Args:
         qry_emb:     (n_qry, D)
-        protos:      (2, D)  — [proto_active, proto_inactive]
+        protos:      (2, D)  - [proto_active, proto_inactive]
         sup_emb:     (n_sup, D)
         active_mask: (n_sup,) bool
     Returns:
@@ -340,7 +340,7 @@ class PrototypicalNetworkRegression(nn.Module):
 
 
 # =============================================================================
-# PROTOTYPICAL NETWORK (BINARY CLASSIFICATION)  — Part A
+# PROTOTYPICAL NETWORK (BINARY CLASSIFICATION)  - Part A
 # =============================================================================
 
 class PrototypicalNetworkClassification(nn.Module):
@@ -357,7 +357,7 @@ class PrototypicalNetworkClassification(nn.Module):
       5. Loss: BCE(P(active), binary_query_labels)
 
     Median threshold is computed from support only and applied to both support
-    and query — same as FS-Mol paper. Guarantees balanced support split.
+    and query - same as FS-Mol paper. Guarantees balanced support split.
 
     Primary metric: ΔAUPRC (same as regression model evaluation).
     """
@@ -370,10 +370,10 @@ class PrototypicalNetworkClassification(nn.Module):
         """
         Args:
             support_input:  Tensor(n_sup, D) or PyG Batch(n_sup graphs)
-            support_labels: Tensor(n_sup,) — binary (0/1); threshold at 0.5
+            support_labels: Tensor(n_sup,) - binary (0/1); threshold at 0.5
             query_input:    Tensor(n_qry, D) or PyG Batch(n_qry graphs)
         Returns:
-            p_active: Tensor(n_qry,) — P(active) for each query molecule
+            p_active: Tensor(n_qry,) - P(active) for each query molecule
         """
         sup_emb = self.encoder(support_input)
         qry_emb = self.encoder(query_input)
@@ -400,7 +400,7 @@ class PrototypicalNetworkClassification(nn.Module):
             query_input:    Tensor(B, n_qry, D) or PyG Batch(B*n_qry graphs)
         Returns:
             p_active:   Tensor(B, n_qry)
-            valid_mask: BoolTensor(B,) — False for degenerate (all-one-class) episodes
+            valid_mask: BoolTensor(B,) - False for degenerate (all-one-class) episodes
         """
         B, n_sup = support_labels.shape
         n_qry = query_input.shape[1] if isinstance(query_input, torch.Tensor) \
@@ -409,7 +409,7 @@ class PrototypicalNetworkClassification(nn.Module):
         sup_emb = _encode_many(self.encoder, support_input, B, n_sup)
         qry_emb = _encode_many(self.encoder, query_input,   B, n_qry)
 
-        # Binarise: support_labels are pre-binarised (0/1) — threshold at 0.5
+        # Binarise: support_labels are pre-binarised (0/1) - threshold at 0.5
         active_mask = support_labels > 0.5  # (B, n_support) bool
 
         act_count   = active_mask.float().sum(dim=1)    # (B,)
@@ -424,7 +424,7 @@ class PrototypicalNetworkClassification(nn.Module):
         proto_active   = torch.bmm(act_w.unsqueeze(1), sup_emb).squeeze(1)    # (B, emb_dim)
         proto_inactive = torch.bmm(inact_w.unsqueeze(1), sup_emb).squeeze(1)  # (B, emb_dim)
 
-        # Squared Euclidean to each prototype — fully vectorised, no per-episode loop.
+        # Squared Euclidean to each prototype - fully vectorised, no per-episode loop.
         # Mahalanobis is used only at eval time (predict_from_embeddings) where the GNN
         # is already trained and covariances are meaningful. During training the GNN starts
         # from random weights: embeddings cluster near a random shell on the unit sphere
@@ -444,7 +444,7 @@ class PrototypicalNetworkClassification(nn.Module):
     def predict_from_embeddings(
         self, sup_emb: torch.Tensor, sup_labels: torch.Tensor, qry_emb: torch.Tensor
     ) -> torch.Tensor:
-        """Predict given pre-computed embeddings — avoids re-encoding support each query chunk."""
+        """Predict given pre-computed embeddings - avoids re-encoding support each query chunk."""
         active_mask = sup_labels > 0.5   # sup_labels must be binary (0/1)
         if not active_mask.any() or not (~active_mask).any():
             return torch.full((qry_emb.shape[0],), 0.5, device=qry_emb.device)
@@ -468,9 +468,9 @@ class PrototypicalNetworkClassification(nn.Module):
         """
         Args:
             support_fingerprints: (B, n_support, input_dim)
-            support_labels:       (B, n_support)  — continuous
+            support_labels:       (B, n_support)  - continuous
             query_fingerprints:   (B, n_query, input_dim)
-            query_labels:         (B, n_query)    — continuous; binarised here
+            query_labels:         (B, n_query)    - continuous; binarised here
 
         Returns:
             loss:    scalar BCE over valid episodes
@@ -480,7 +480,7 @@ class PrototypicalNetworkClassification(nn.Module):
             support_input, support_labels, query_input
         )
 
-        # query_labels are pre-binarised (0/1) — threshold at 0.5
+        # query_labels are pre-binarised (0/1) - threshold at 0.5
         binary_query = (query_labels > 0.5).float()  # (B, n_query)
 
         if not valid_mask.any():
@@ -488,7 +488,7 @@ class PrototypicalNetworkClassification(nn.Module):
 
         # BCE only over valid (non-degenerate) episodes.
         # F.binary_cross_entropy is blocked by autocast at the C++ level regardless of dtype,
-        # so compute it manually — mathematically identical, autocast-safe.
+        # so compute it manually - mathematically identical, autocast-safe.
         p_valid = p_active[valid_mask].float()       # (V, n_query)
         b_valid = binary_query[valid_mask].float()   # (V, n_query)
         p_clamped = p_valid.clamp(1e-7, 1 - 1e-7)
@@ -582,9 +582,9 @@ class CombinedGraphReadout(nn.Module):
     FS-Mol paper graph readout (graph_readout.py CombinedGraphReadout).
 
     Combines three pooling strategies over ALL intermediate GNN states:
-      1. Weighted mean  — per-graph softmax attention weights
-      2. Weighted sum   — sigmoid attention weights
-      3. Max pooling    — element-wise max over nodes
+      1. Weighted mean  - per-graph softmax attention weights
+      2. Weighted sum   - sigmoid attention weights
+      3. Max pooling    - element-wise max over nodes
 
     Each strategy uses num_heads independent heads of size head_dim. The three
     out_dim-dimensional results are concatenated, passed through ReLU, and
@@ -670,7 +670,7 @@ class FSMolGNNEncoder(nn.Module):
           cat(initial, layer_1, ..., layer_N)  →  (N_nodes, (num_layers+1)*128)
           → weighted_mean + weighted_sum + max  →  512-dim graph embedding
       - Feature fusion: cat(GNN_512, ECFP_2048, desc_42) → Linear(2602→1024) → ReLU → Linear(1024→512)
-      - NO L2 normalisation — paper uses raw FC output for Mahalanobis distance
+      - NO L2 normalisation - paper uses raw FC output for Mahalanobis distance
 
     Edge format: 3-dim one-hot (SINGLE/DOUBLE/TRIPLE) from smiles_to_fsmol_graph().
     Graph-level ecfp (n_graphs, 2048) and descriptors (n_graphs, 42) stored as
@@ -693,7 +693,7 @@ class FSMolGNNEncoder(nn.Module):
         super().__init__()
         self.deg = deg   # stored for checkpoint serialisation
 
-        # No bias — matches FS-Mol paper init_node_proj
+        # No bias - matches FS-Mol paper init_node_proj
         self.node_emb = nn.Linear(node_feat_dim, hidden_channels, bias=False)
 
         self.gnn_layers = nn.ModuleList([
@@ -714,7 +714,7 @@ class FSMolGNNEncoder(nn.Module):
 
     def forward(self, batch) -> torch.Tensor:
         """
-        Returns (n_graphs, embedding_dim) — raw FC output, no L2 normalisation.
+        Returns (n_graphs, embedding_dim) - raw FC output, no L2 normalisation.
         """
         x = self.node_emb(batch.x)          # (N_nodes, 128)
 

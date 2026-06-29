@@ -1,14 +1,14 @@
-"""
-config.py — Central path configuration
+﻿"""
+config.py - Central path configuration
 ========================================
 Change ENV to switch between local and server environments.
-All other scripts import paths from here — never hardcode paths elsewhere.
+All other scripts import paths from here - never hardcode paths elsewhere.
 """
 import os
 
 # ── Environment ────────────────────────────────────────────────────────────────
 # Change this one line to switch environments
-ENV = "local"     # "local" | "server"
+ENV = "local"      # "local" | "server"
 
 if ENV == "local":
     FSMOL_DIR   = "D:/Thesis/PTN/data/fsmol"
@@ -19,7 +19,7 @@ else:
     DRUGOOD_DIR = "/home/chjo00006/PTN/data/drugood"
     REPO_ROOT   = "/home/chjo00006/PTN"
 
-# ── Derived paths — do not edit below this line ────────────────────────────────
+# ── Derived paths - do not edit below this line ────────────────────────────────
 FSMOL_TRAIN = os.path.join(FSMOL_DIR, "train")
 FSMOL_VAL   = os.path.join(FSMOL_DIR, "valid")
 FSMOL_TEST  = os.path.join(FSMOL_DIR, "test")
@@ -47,7 +47,7 @@ OUTPUT_DIR  = os.path.join(REPO_ROOT, "outputs")
 FIGURES_DIR = os.path.join(OUTPUT_DIR, "figures")
 RESULTS_DIR = os.path.join(OUTPUT_DIR, "results")
 
-# Per-run subdirectories — one folder per (encoder, head, split) combination.
+# Per-run subdirectories - one folder per (encoder, head, split) combination.
 # Use these instead of RESULTS_DIR / FIGURES_DIR when writing run-specific files.
 DATA_ANALYSIS_RESULTS_DIR = os.path.join(RESULTS_DIR, "data_analysis")
 DATA_ANALYSIS_FIGURES_DIR = os.path.join(FIGURES_DIR, "data_analysis")

@@ -1,4 +1,4 @@
-# Prototypical Networks for Molecular OOD Property Prediction
+﻿# Prototypical Networks for Molecular OOD Property Prediction
 
 Few-shot molecular property prediction with out-of-distribution (OOD) generalisation, evaluated on two benchmarks: FS-Mol and DrugOOD.
 
@@ -178,20 +178,54 @@ Inside-task OOD: support and query from different scaffold groups within the sam
 | 2 | +0.2091 | ep 100 (full) | 0.126 | 0.220 | 0.049 |
 | **mean ± std** | **+0.208 ± 0.002** | | **0.127 ± 0.002** | **0.220 ± 0.000** | **0.052 ± 0.003** |
 
+**FS-Mol GNN · classification · ratio-anneal** *(novel contribution - seed 0 only, seeds 1-2 pending)*
+
+| Seed | Best val ΔAUPRC | Best epoch | n=16 | n=128 (random) | n=128 (scaffold) |
+|---|---|---|---|---|---|
+| 0 | +0.2084 | ep 98 (ratio=0.59) | 0.127 | 0.225 | 0.049 |
+
+> Ratio annealing: scaffold episode fraction linearly increased 0.0→0.60 over 100 epochs. See [train.py](train.py) `pretrain_classification_anneal`.
+
+---
+
+### Scaffold OOD: Intervention Results
+
+Three independent interventions were tested to address the scaffold ΔAUPRC gap. All produced null results (GNN encoder, n=128 support):
+
+| Intervention | Training | Scaffold ΔAUPRC | Random ΔAUPRC | Notes |
+|---|---|---|---|---|
+| Baseline | random episodes | 0.0495 | 0.2166 | 3-seed avg |
+| Baseline | shift-aware episodes | 0.0499 | 0.2203 | 3-seed avg |
+| **TTPA** | random + test-time reweight | **0.0499** | **0.2160** | 3-seed avg; +0.0004 gain (noise) |
+| **TTPA** | shift-aware + test-time reweight | **0.0502** | **0.2196** | 3-seed avg; +0.0003 gain (noise) |
+| **Ratio annealing** | 0%→60% scaffold curriculum | **0.0486** | **0.2252** | seed 0 only |
+| *RF baseline* | *per-task supervised* | *0.182* | *0.194* | *no meta-learning* |
+
+**TTPA** (Test-Time Prototype Adaptation): at inference, reweights each support molecule's contribution to the prototype by its mean binary Tanimoto similarity to the query set. Training-free, runs on existing checkpoints. Code: [evaluate.py](evaluate.py), [Analysis/model/run_ttpa.py](Analysis/model/run_ttpa.py).
+
+**Ratio annealing**: starts with 100% random episodes, linearly increases scaffold-split fraction to 60% during training. Per-epoch annealing via `shift_aware_ratio` attribute on the dataset. Code: [train.py](train.py) `pretrain_classification_anneal`, `TRAINING_SPLIT = "anneal"` in [main.py](main.py).
+
+**Conclusion**: The scaffold ΔAUPRC ceiling (~0.050) is structural - intrinsic to the mean-prototype inference mechanism. Neither test-time adaptation nor training curriculum changes can overcome it. The failure mode is that support molecules (same scaffold family) produce a prototype in the wrong region of embedding space relative to OOD query scaffolds, and this cannot be corrected by reweighting or by changing the training distribution.
+
+**Figure** (run `python Analysis/model/plot_interventions.py` to regenerate):
+
+![Intervention comparison](outputs/figures/data_analysis/fig_interventions.png)
+
 ---
 
 ### Key Observations
 
 - **GNN random is the best model on FS-Mol**: FS-Mol GNN (random episodes, 3 seeds) peaks at ΔAUPRC **0.226 ± 0.001** at n=128, exceeding the FS-Mol paper's 0.201 at that support size and matching the paper's n=256 number (0.226) one step earlier.
 - **Episode type (shift-aware vs random) barely affects FS-Mol test score**: ECFP shift-aware 0.181 ± 0.003 vs ECFP random 0.183 ± 0.001 at n=128; GNN shift-aware 0.220 ± 0.000 vs GNN random 0.226 ± 0.001. The gain from richer encoder architecture dominates any episode-type effect.
-- **Shift-aware training improves DrugOOD cross-dataset generalisation**: GNN shift-aware achieves 0.043 ± 0.003 on DrugOOD assay OOD vs GNN random 0.033 ± 0.002 — a ~30% gain. Training on scaffold-OOD episodes transfers to cross-dataset OOD even when it barely moves the FS-Mol in-distribution score.
+- **Shift-aware training improves DrugOOD cross-dataset generalisation**: GNN shift-aware achieves 0.043 ± 0.003 on DrugOOD assay OOD vs GNN random 0.033 ± 0.002 - a ~30% gain. Training on scaffold-OOD episodes transfers to cross-dataset OOD even when it barely moves the FS-Mol in-distribution score.
 - **GNN maintains performance at large n**: GNN random holds 0.149 at n=256 and 0.166 at n=512, whereas ECFP random collapses to 0.076 and 0.066. The GNN's structural representations are robust to the large-support regime; ECFP prototypes degrade.
-- **Streaming over all 26k assays matters enormously**: ECFP pool-based (Run 1, ~62 assays) reaches 0.062 at n=128; ECFP streaming (any episode type) reaches ~0.183 — a 3× gain purely from training data diversity.
-- **RF baseline reveals ProtoNet's scaffold OOD failure**: On random split, GNN ProtoNet (0.226 at n=128) clearly beats RF (0.194) — meta-learning adds value when context and query share scaffolds. On scaffold split, the picture reverses: RF (0.182 at n=128) outperforms all ProtoNet variants (~0.051–0.059). A per-task RF trained fresh on the context set adapts to the task's SAR directly, while ProtoNet's meta-learned embedding space fails to generalise across scaffold boundaries. This confirms scaffold OOD is a fundamental limitation of the embedding approach, not a data-size or encoder issue.
+- **Streaming over all 26k assays matters enormously**: ECFP pool-based (Run 1, ~62 assays) reaches 0.062 at n=128; ECFP streaming (any episode type) reaches ~0.183 - a 3× gain purely from training data diversity.
+- **RF baseline reveals ProtoNet's scaffold OOD failure**: On random split, GNN ProtoNet (0.226 at n=128) clearly beats RF (0.194) - meta-learning adds value when context and query share scaffolds. On scaffold split, the picture reverses: RF (0.182 at n=128) outperforms all ProtoNet variants (~0.051–0.059). A per-task RF trained fresh on the context set adapts to the task's SAR directly, while ProtoNet's meta-learned embedding space fails to generalise across scaffold boundaries. This confirms scaffold OOD is a fundamental limitation of the embedding approach, not a data-size or encoder issue.
 - **Scaffold split is universally hard for ProtoNet**: All ProtoNet variants plateau at ~0.051–0.059 at n=16–128, then collapse at n=256 (~0.005–0.014). Encoder choice and episode type make negligible difference. The RF does not collapse here (0.135 at n=256), pinpointing the prototype-based inference mechanism as the bottleneck.
-- **GNN DrugOOD assay OOD is clearly better than ECFP**: GNN shift-aware 0.043 ± 0.003 vs ECFP shift-aware 0.015 ± 0.007 — roughly 3× gain. Structural features transfer better across assay boundaries than fingerprints.
+- **GNN DrugOOD assay OOD is clearly better than ECFP**: GNN shift-aware 0.043 ± 0.003 vs ECFP shift-aware 0.015 ± 0.007 - roughly 3× gain. Structural features transfer better across assay boundaries than fingerprints.
+- **Three interventions all null on scaffold**: TTPA (+0.0004), shift-aware training (+0.000), and ratio annealing (seed 0: -0.001) all land at the same ~0.050 scaffold ceiling. The failure is not addressable by test-time adaptation or training curriculum design - it is structural to the mean-prototype mechanism.
 - **Low variance across seeds**: std ≤ 0.005 for all models on random split. Results are reproducible.
-- **n=256/512 drop is partially assay selection bias**: At n=256 only 29 qualifying assays remain (vs 154 at n=16). These large assays are harder — the drop reflects both a harder subset and (for ECFP) a genuine representation limit.
+- **n=256/512 drop is partially assay selection bias**: At n=256 only 29 qualifying assays remain (vs 154 at n=16). These large assays are harder - the drop reflects both a harder subset and (for ECFP) a genuine representation limit.
 
 For full per-assay distributions, per-context-size DrugOOD curves, and baseline comparisons, see [Analysis/model/README.md](Analysis/model/README.md). 
 

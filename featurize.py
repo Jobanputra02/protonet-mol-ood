@@ -1,4 +1,4 @@
-"""
+﻿"""
 Molecular Featurization: SMILES → PyTorch Geometric Data
 =========================================================
 Two featurization schemes:
@@ -42,7 +42,7 @@ except ImportError:
 
 
 # =============================================================================
-# ORIGINAL FEATURIZATION  (PNAGNNEncoder — keep unchanged)
+# ORIGINAL FEATURIZATION  (PNAGNNEncoder - keep unchanged)
 # =============================================================================
 
 _ATOM_TYPE_LIST   = [1, 5, 6, 7, 8, 9, 14, 15, 16, 17, 33, 34, 35, 53]   # H B C N O F Si P S Cl As Se Br I
@@ -298,7 +298,7 @@ _FSMOL_BOND_TYPE_IDX = {
     rdchem.BondType.SINGLE:   0,
     rdchem.BondType.DOUBLE:   1,
     rdchem.BondType.TRIPLE:   2,
-    rdchem.BondType.AROMATIC: 0,  # fallback — shouldn't occur after Kekulize
+    rdchem.BondType.AROMATIC: 0,  # fallback - shouldn't occur after Kekulize
 }
 
 

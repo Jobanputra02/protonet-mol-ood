@@ -1,5 +1,5 @@
-"""
-Per-Task Scaffold Diversity — FS-Mol All Splits
+﻿"""
+Per-Task Scaffold Diversity - FS-Mol All Splits
 ================================================
 For each assay (task), computes:
   - n_unique_scaffolds       : distinct Bemis-Murcko scaffolds
@@ -110,7 +110,7 @@ def scaffold_diversity_for_split(
 def print_summary(df: pd.DataFrame, label: str) -> None:
     d  = df["n_unique_scaffolds"].describe()
     dr = df["scaffold_diversity_ratio"].describe()
-    print(f"\n  === {label} — scaffold diversity ({len(df)} assays) ===")
+    print(f"\n  === {label} - scaffold diversity ({len(df)} assays) ===")
     print(f"  n_unique_scaffolds : mean={d['mean']:.1f}, median={d['50%']:.0f}, "
           f"min={d['min']:.0f}, max={d['max']:.0f}, std={d['std']:.1f}")
     print(f"  diversity ratio    : mean={dr['mean']:.3f}, median={dr['50%']:.3f}")
@@ -170,10 +170,10 @@ if __name__ == "__main__":
         ax.set_axisbelow(True)
         ax.set_xlabel("Diversity ratio (unique scaffolds / n_molecules)", fontsize=10)
         ax.set_ylabel("Number of tasks", fontsize=10)
-        ax.set_title(f"Diversity ratio — {label}", fontsize=11)
+        ax.set_title(f"Diversity ratio - {label}", fontsize=11)
         ax.legend(fontsize=8)
 
-    plt.suptitle("Per-Task Scaffold Diversity — FS-Mol", fontsize=13, y=1.01)
+    plt.suptitle("Per-Task Scaffold Diversity - FS-Mol", fontsize=13, y=1.01)
     plt.tight_layout()
     out_fig = os.path.join(FIGURES_DIR, "fig_scaffold_diversity_per_task.png")
     plt.savefig(out_fig, dpi=150, bbox_inches="tight")

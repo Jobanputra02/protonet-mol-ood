@@ -1,18 +1,18 @@
-"""
+﻿"""
 Multi-Seed Figure Generation + Model Comparison
 ================================================
 Loads seed0/1/2 result CSVs for one or all classification models, averages
 per (assay_id, support_size, split_type), and generates publication-quality figures:
 
   Per-model figures (same format as plot_results.py):
-    fig2a_fsmol_line_plot.png  — ΔAUPRC vs support size, 3 split curves
-    fig2b_fsmol_boxplot.png    — per-assay distribution across support sizes
-    fig3_drugood_line_plot.png — ΔAUPRC vs context size, faceted by shift type
+    fig2a_fsmol_line_plot.png  - ΔAUPRC vs support size, 3 split curves
+    fig2b_fsmol_boxplot.png    - per-assay distribution across support sizes
+    fig3_drugood_line_plot.png - ΔAUPRC vs context size, faceted by shift type
 
   Comparison figures (all models overlaid):
-    fig_comparison_random.png   — all models on random split
-    fig_comparison_scaffold.png — all models on scaffold split (thesis main finding)
-    fig_comparison_drugood.png  — all models on DrugOOD assay OOD
+    fig_comparison_random.png   - all models on random split
+    fig_comparison_scaffold.png - all models on scaffold split (thesis main finding)
+    fig_comparison_drugood.png  - all models on DrugOOD assay OOD
 
 Usage:
     # single model
@@ -82,7 +82,7 @@ MODEL_LINESTYLES = {
 
 
 # =============================================================================
-# Data loading — merge seeds
+# Data loading - merge seeds
 # =============================================================================
 
 def load_fsmol(model: str) -> pd.DataFrame:
@@ -179,7 +179,7 @@ def plot_fsmol_line(df: pd.DataFrame, run_label: str, out_dir: str) -> None:
         if ax is axes[0]:
             ax.legend(fontsize=9)
 
-    plt.suptitle(f"FS-Mol Test Evaluation — Prototypical Network ({run_label})",
+    plt.suptitle(f"FS-Mol Test Evaluation - Prototypical Network ({run_label})",
                  fontsize=13, y=1.02)
     plt.tight_layout()
     out = os.path.join(out_dir, "fig2a_fsmol_line_plot.png")
@@ -256,7 +256,7 @@ def plot_fsmol_boxplot(df: pd.DataFrame, run_label: str, out_dir: str) -> None:
 
 def plot_drugood_line(df: pd.DataFrame, run_label: str, out_dir: str) -> None:
     if df.empty:
-        print("  No DrugOOD data — skipping fig3")
+        print("  No DrugOOD data - skipping fig3")
         return
 
     split_types = sorted(df["split_type"].unique())
@@ -294,12 +294,12 @@ def plot_drugood_line(df: pd.DataFrame, run_label: str, out_dir: str) -> None:
             ax.set_axisbelow(True)
             ax.set_xlabel("Context set size", fontsize=10)
             ax.set_ylabel(ylabel, fontsize=10)
-            ax.set_title(f"{short_name} — {ylabel}", fontsize=11)
+            ax.set_title(f"{short_name} - {ylabel}", fontsize=11)
             ax.set_xticks(sorted(sub["context_set_size"].unique()))
             if col_i == 0:
                 ax.legend(fontsize=8)
 
-    plt.suptitle(f"DrugOOD Evaluation — Prototypical Network ({run_label})",
+    plt.suptitle(f"DrugOOD Evaluation - Prototypical Network ({run_label})",
                  fontsize=13, y=1.02 if n_rows == 1 else 1.01)
     plt.tight_layout()
     out = os.path.join(out_dir, "fig3_drugood_line_plot.png")
@@ -334,7 +334,7 @@ def generate_model_figures(model: str) -> pd.DataFrame:
 # =============================================================================
 
 def plot_comparison_fsmol(model_dfs: dict[str, pd.DataFrame], split_type: str) -> None:
-    """All models on one split type — one figure per split."""
+    """All models on one split type - one figure per split."""
     fig, ax = plt.subplots(figsize=(9, 5.5))
 
     for model, df in model_dfs.items():
@@ -381,7 +381,7 @@ def plot_comparison_fsmol(model_dfs: dict[str, pd.DataFrame], split_type: str) -
     ax.set_xlabel("Support set size", fontsize=12)
     ax.set_ylabel("Mean ΔAUPRC (3-seed avg ± std)", fontsize=12)
     stype_label = {"random": "Random", "scaffold": "Scaffold OOD", "size": "Size OOD"}.get(split_type, split_type)
-    ax.set_title(f"FS-Mol Test — {stype_label} Split: All Models", fontsize=13)
+    ax.set_title(f"FS-Mol Test - {stype_label} Split: All Models", fontsize=13)
     ax.legend(fontsize=9, loc="upper left")
 
     plt.tight_layout()
@@ -418,7 +418,7 @@ def plot_comparison_drugood(model_dfs_drugood: dict[str, pd.DataFrame]) -> None:
     ax.set_axisbelow(True)
     ax.set_xlabel("Context set size", fontsize=12)
     ax.set_ylabel("Mean ΔAUPRC (ood_test)", fontsize=12)
-    ax.set_title("DrugOOD — Assay OOD: All Models", fontsize=13)
+    ax.set_title("DrugOOD - Assay OOD: All Models", fontsize=13)
     ax.legend(fontsize=9, loc="upper left")
 
     plt.tight_layout()
@@ -479,7 +479,7 @@ def plot_comparison_scaffold_vs_random(model_dfs: dict[str, pd.DataFrame]) -> No
         if split_type == "random":
             ax.legend(fontsize=8, loc="upper left")
 
-    plt.suptitle("FS-Mol Test — All ProtoNet Models: Random vs Scaffold OOD (3-seed avg)",
+    plt.suptitle("FS-Mol Test - All ProtoNet Models: Random vs Scaffold OOD (3-seed avg)",
                  fontsize=13, y=1.02)
     plt.tight_layout()
     out = os.path.join(DATA_ANALYSIS_FIGURES_DIR, "fig_comparison_random_vs_scaffold.png")

@@ -1,14 +1,14 @@
-"""
-RF Baseline — Per-Task RandomForest on FS-Mol Test Assays
+﻿"""
+RF Baseline - Per-Task RandomForest on FS-Mol Test Assays
 ===========================================================
 Trains a RandomForestClassifier on the context set for each FS-Mol test assay
 and evaluates on the query set under scaffold-OOD and random splits.
 
-Answers the supervisor question:
-  "What is a lower bound on ΔAUPRC when support and query have different scaffolds?"
+Establishes the per-task supervised learning upper bound:
+  what ΔAUPRC is achievable when the classifier is trained fresh on each context set?
 
 RF uses fixed hyperparameters (n_estimators=100, max_depth=10, max_features="sqrt",
-min_samples_leaf=2) — good defaults for small support sets. No meta-learning:
+min_samples_leaf=2) - good defaults for small support sets. No meta-learning:
 the RF is trained fresh on each context set independently.
 
 Protocol matches ProtoNet evaluation exactly:
@@ -279,7 +279,7 @@ def plot_comparison(rf_df: pd.DataFrame, split_type: str) -> None:
     ax.set_xticklabels([f"{s}\n(N={n_per_size.get(s,'?')})" for s in sizes], fontsize=8)
     ax.set_xlabel("Support set size", fontsize=11)
     ax.set_ylabel("Mean ΔAUPRC", fontsize=11)
-    ax.set_title(f"FS-Mol Test — {split_type.capitalize()} Split: RF vs ProtoNet", fontsize=12)
+    ax.set_title(f"FS-Mol Test - {split_type.capitalize()} Split: RF vs ProtoNet", fontsize=12)
     ax.legend(fontsize=9)
     ax.yaxis.grid(True, linestyle="--", alpha=0.5)
     ax.set_axisbelow(True)

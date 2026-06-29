@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 """
 Main Entry Point
 ================
@@ -6,7 +6,7 @@ Full pipeline:
 1. Load FS-Mol assays (.jsonl.gz files) => pretrain prototypical network
 2. Load DrugOOD JSON splits => evaluate OOD generalization
 
-All paths are centralised in config.py — edit ENV there to switch environments.
+All paths are centralised in config.py - edit ENV there to switch environments.
 """
 import json
 import gzip
@@ -19,7 +19,7 @@ from config import (FSMOL_TRAIN, FSMOL_VAL, FSMOL_TEST,
 from data import AssayDataset, DrugOODEvalDataset, get_scaffold
 from model import ECFPEncoder, PNAGNNEncoder, FSMolGNNEncoder
 from featurize import NODE_FEAT_DIM, EDGE_FEAT_DIM, compute_degree_histogram
-from train import pretrain_regression, pretrain_classification
+from train import pretrain_regression, pretrain_classification, pretrain_classification_anneal
 from evaluate import load_and_evaluate, evaluate_inside_task_ood, evaluate_fsmol_test
 
 # =============================================================================
@@ -30,10 +30,10 @@ from evaluate import load_and_evaluate, evaluate_inside_task_ood, evaluate_fsmol
 #   "SMILES"                : SMILES string
 #   "fingerprints"          : precomputed 2048-bit ECFP list of 0/1 ints
 #   "LogRegressionProperty" : log-transformed activity value (used as label)
-#   "Relation"              : measurement relation — "=", ">", "<", "~"
+#   "Relation"              : measurement relation - "=", ">", "<", "~"
 #                             Only "=" (exact) measurements are kept.
 
-# Minimum task size after exact-label filtering — supervisor requirement.
+# Minimum task size after exact-label filtering.
 MIN_TASK_SIZE = 32
 
 
@@ -42,7 +42,7 @@ def load_fsmol_assay(filepath: str) -> tuple[AssayDataset, dict]:
     Load one FS-Mol assay file (.jsonl.gz) into an AssayDataset.
 
     Only keeps compounds where Relation == "=" (exact measurements).
-    Inexact compounds (>, <, ~) are dropped per supervisor requirement.
+    Inexact compounds (>, <, ~) are dropped; only exact measurements are kept.
 
     Returns:
         (dataset, stats) where stats = {
@@ -70,7 +70,7 @@ def load_fsmol_assay(filepath: str) -> tuple[AssayDataset, dict]:
             mol = json.loads(line)
             n_total += 1
 
-            # Drop inexact measurements — only keep Relation == "="
+            # Drop inexact measurements - only keep Relation == "="
             relation = mol.get("Relation", "=")
             if relation != "=":
                 n_inexact += 1
@@ -98,7 +98,7 @@ def load_fsmol_assay(filepath: str) -> tuple[AssayDataset, dict]:
                 n_invalid += 1
                 continue
 
-    # Hard-sync lengths — if any conversion failed silently, truncate to minimum
+    # Hard-sync lengths - if any conversion failed silently, truncate to minimum
     n = min(len(fingerprints), len(labels), len(smiles_list), len(binary_labels))
     fingerprints = fingerprints[:n]
     labels = labels[:n]
@@ -109,13 +109,13 @@ def load_fsmol_assay(filepath: str) -> tuple[AssayDataset, dict]:
     # by injecting precomputed fingerprints directly after construction.
     dataset = AssayDataset.__new__(AssayDataset)
     dataset.assay_id = assay_id
-    # Keep as list — do NOT call np.array() here (causes OOM across 26k assays)
+    # Keep as list - do NOT call np.array() here (causes OOM across 26k assays)
     dataset.fingerprints = fingerprints
     dataset.labels = np.array(labels, dtype=np.float32)
     dataset.scaffolds = smiles_list
 
     # Scaffold groups built from the SAME filtered list used to populate
-    # fingerprints/labels — indices are guaranteed to match.
+    # fingerprints/labels - indices are guaranteed to match.
     dataset.scaffold_groups = {}
     for i, smi in enumerate(smiles_list):
         scaffold = get_scaffold(smi)
@@ -144,7 +144,7 @@ def load_fsmol_split(split_dir: str, max_assays: Optional[int] = None) -> list[A
 
     Args:
         split_dir:  Path to the split folder (contains .jsonl.gz files)
-        max_assays: Optional cap — useful for quick tests. None = load all.
+        max_assays: Optional cap - useful for quick tests. None = load all.
 
     Returns:
         List of AssayDataset, one per assay file (only tasks with >= MIN_TASK_SIZE compounds).
@@ -222,16 +222,16 @@ def get_ram_usage():
 # DRUGOOD LOADER
 # =============================================================================
 # Confirmed JSON structure (from inspection):
-#   data["split"]["train"]    — training molecules
-#   data["split"]["ood_val"]  — OOD validation
-#   data["split"]["ood_test"] — OOD test       => use as query set
-#   data["split"]["iid_val"]  — IID validation
-#   data["split"]["iid_test"] — IID test
+#   data["split"]["train"]    - training molecules
+#   data["split"]["ood_val"]  - OOD validation
+#   data["split"]["ood_test"] - OOD test       => use as query set
+#   data["split"]["iid_val"]  - IID validation
+#   data["split"]["iid_test"] - IID test
 #
 # Each entry has:
 #   "smiles"    : SMILES string
 #   "reg_label" : continuous activity value (pCHEMBL or similar)
-#   "cls_label" : binary label (not used — we do regression)
+#   "cls_label" : binary label (not used - we do regression)
 #   "assay_id"  : ChEMBL assay ID
 #   "domain_id" : scaffold/size/assay domain identifier
 
@@ -242,7 +242,7 @@ def load_drugood_split(json_path: str, split_type: str) -> DrugOODEvalDataset:
     Context set = sampled from train split (in-distribution labeled molecules)
     Query set   = ood_test (OOD molecules to predict)
 
-    Context is sampled from train — not ood_val — so the model sees in-distribution
+    Context is sampled from train - not ood_val - so the model sees in-distribution
     support and must generalize to OOD queries. This is the correct zero-shot OOD protocol.
     """
     with open(json_path, "r", encoding="utf-8") as f:
@@ -296,7 +296,7 @@ if __name__ == "__main__":
     import pandas as pd
 
     # ==========================================================================
-    # EXPERIMENT CONFIGURATION — edit this block to select what to train/eval.
+    # EXPERIMENT CONFIGURATION - edit this block to select what to train/eval.
     #
     # MODEL_HEAD:     "regression"     => PrototypicalNetworkRegression
     #                                    kernel regression, MSE loss (Part 0)
@@ -312,23 +312,29 @@ if __name__ == "__main__":
     # TRAINING_SPLIT: "shift_aware"   => support from one scaffold group, query
     #                                    from different groups (OOD-aware episodes)
     #                 "random"        => support and query drawn randomly (IID episodes)
+    #                 "anneal"        => episode ratio annealing (classification only):
+    #                                    starts 100% random, linearly increases scaffold
+    #                                    fraction to 0.6 over training
     # ==========================================================================
     MODEL_HEAD     = "classification"  # "regression" | "classification"
     ENCODER        = "fsmol_gnn"           # "ecfp" | "gnn" | "fsmol_gnn"
-    TRAINING_SPLIT = "random"    # "shift_aware" | "random"
-    SEED           = 2                # change per run: 0, 1, 2
+    TRAINING_SPLIT = "anneal"    # "shift_aware" | "random" | "anneal"
+    SEED           = 0                # change per run: 0, 1, 2
     SKIP_TRAINING  = False            # True = load existing checkpoint, skip steps 1-2 pretraining
 
-    # Pretrain functions are named pretrain_{head} — import from train.py.
+    # Pretrain functions are named pretrain_{head} - import from train.py.
     PRETRAIN_FN_MAP = {
         "regression": pretrain_regression,
         "classification": pretrain_classification,
     }
     pretrain_fn = PRETRAIN_FN_MAP[MODEL_HEAD]
 
+    if TRAINING_SPLIT == "anneal" and MODEL_HEAD != "classification":
+        raise ValueError("TRAINING_SPLIT='anneal' is only supported for MODEL_HEAD='classification'")
+
     shift_aware = (TRAINING_SPLIT == "shift_aware")
 
-    # Unique tag for all output files from this run — keeps results from different
+    # Unique tag for all output files from this run - keeps results from different
     # configurations and seeds in separate subdirectories.
     run_tag   = f"{ENCODER}_{MODEL_HEAD}_{TRAINING_SPLIT}_seed{SEED}"
     save_path = os.path.join(CHECKPOINT_DIR, f"ptn_{run_tag}.pt")
@@ -360,7 +366,7 @@ if __name__ == "__main__":
     print("=" * 60)
 
     # ------------------------------------------------------------------
-    # STEP 1: Index FS-Mol files (no loading — pretrain streams from disk)
+    # STEP 1: Index FS-Mol files (no loading - pretrain streams from disk)
     # ------------------------------------------------------------------
     print("\n[1/4] Indexing FS-Mol files...")
     train_files = get_assay_files(FSMOL_TRAIN)
@@ -412,21 +418,38 @@ if __name__ == "__main__":
         # LR: 1e-4 for GNN (FS-Mol paper default), 1e-3 for ECFP
         lr = 1e-4 if ENCODER in ("gnn", "fsmol_gnn") else 1e-3
 
-        model = pretrain_fn(
-            encoder,
-            train_assays=train_files,    # all ~26k training files — no pool filter
-            val_assays=val_files,        # all ~40 val files
-            n_epochs=100,
-            tasks_per_batch=16,          # FS-Mol paper: 16 tasks accumulated per optimizer step
-            n_support=64,                        # fixed — matches FS-Mol paper training protocol
-            n_query=256,                 # FS-Mol paper training episode size
-            n_episodes_train=1600,       # episodes per epoch (100 optimizer steps/epoch × 100 epochs = 10,000 steps)
-            n_episodes_val=200,          # ~5 per val assay × 40 val assays
-            lr=lr,
-            save_path=save_path,
-            shift_aware=shift_aware,
-            seed=SEED,
-        )
+        if TRAINING_SPLIT == "anneal":
+            model = pretrain_classification_anneal(
+                encoder,
+                train_assays=train_files,
+                val_assays=val_files,
+                n_epochs=100,
+                tasks_per_batch=16,
+                n_support=64,
+                n_query=256,
+                n_episodes_train=1600,
+                n_episodes_val=200,
+                lr=lr,
+                save_path=save_path,
+                max_ratio=0.6,
+                seed=SEED,
+            )
+        else:
+            model = pretrain_fn(
+                encoder,
+                train_assays=train_files,    # all ~26k training files - no pool filter
+                val_assays=val_files,        # all ~40 val files
+                n_epochs=100,
+                tasks_per_batch=16,          # FS-Mol paper: 16 tasks accumulated per optimizer step
+                n_support=64,                # fixed - matches FS-Mol paper training protocol
+                n_query=256,                 # FS-Mol paper training episode size
+                n_episodes_train=1600,       # episodes per epoch (100 optimizer steps × 100 epochs = 10,000 steps)
+                n_episodes_val=200,          # ~5 per val assay × 40 val assays
+                lr=lr,
+                save_path=save_path,
+                shift_aware=shift_aware,
+                seed=SEED,
+            )
         print(f"  RAM after pretrain: {ram_gb():.1f} GB")
 
         device = next(model.parameters()).device
@@ -439,7 +462,7 @@ if __name__ == "__main__":
     # clusters where the UID is not in /etc/passwd. Eager mode on A100 + AMP is fast enough.
 
     # ------------------------------------------------------------------
-    # STEP 3: DrugOOD evaluation — zero-shot OOD with context from train
+    # STEP 3: DrugOOD evaluation - zero-shot OOD with context from train
     # Three IC50 shift types: scaffold / size / assay
     # ------------------------------------------------------------------
     print("\n[3/4] Evaluating on DrugOOD...")
@@ -474,8 +497,8 @@ if __name__ == "__main__":
 
     # ------------------------------------------------------------------
     # STEP 4: FS-Mol test evaluation
-    #   4a — inside-task OOD at fixed n_support=16 (scaffold split)
-    #   4b — support-size sweep, 3 split types => 3 curves for Fig 2a
+    #   4a - inside-task OOD at fixed n_support=16 (scaffold split)
+    #   4b - support-size sweep, 3 split types => 3 curves for Fig 2a
     # ------------------------------------------------------------------
     print("\n[4/4] FS-Mol test evaluation...")
 
@@ -492,7 +515,7 @@ if __name__ == "__main__":
     inside_task_df.to_csv(inside_task_path, index=False)
     print(f"  Saved => {inside_task_path}")
 
-    # 4b: Support-size sweep — 3 split types => 3 curves in Fig 2a
+    # 4b: Support-size sweep - 3 split types => 3 curves in Fig 2a
     print("\n  [4b] Support-size sweep (random / scaffold / size splits)...")
     fsmol_dfs = []
     for stype in ["random", "scaffold", "size"]:

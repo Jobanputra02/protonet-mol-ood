@@ -1,10 +1,10 @@
-"""
+﻿"""
 Training Loop: FS-Mol Pretraining
 ==================================
 Epoch-based training with gradient accumulation matching the FS-Mol paper protocol:
   - n_epochs outer loop; validates and saves at end of each epoch
   - tasks_per_batch: how many episodes are accumulated per optimizer step (default 16)
-  - Streams from ALL training files — no pool size limit
+  - Streams from ALL training files - no pool size limit
   - Constant LR (FS-Mol paper default; no scheduler)
 
 Both GNN and ECFP use batch_size=1 and accumulate tasks_per_batch forward passes
@@ -35,7 +35,7 @@ def set_seed(seed: int) -> None:
 
 
 def _encoder_config(encoder) -> dict:
-    """Serialisable config dict for a given encoder — stored inside each checkpoint."""
+    """Serialisable config dict for a given encoder - stored inside each checkpoint."""
     if isinstance(encoder, FSMolGNNEncoder):
         deg = encoder.deg
         return {
@@ -80,7 +80,7 @@ def _make_loaders(encoder, train_files, val_files,
     collate_fn   = graph_episode_collate if is_gnn else None
     gnn_kwargs   = {"fsmol_style": is_fsmol_gnn} if is_gnn else {}
 
-    # batch_size=1 for all encoders — streaming assays have variable query sizes
+    # batch_size=1 for all encoders - streaming assays have variable query sizes
     # (small assays may have fewer than n_query remaining molecules after support sampling),
     # so stacking a batch of 16 episodes would fail. Gradient accumulation over
     # tasks_per_batch forward passes produces the same effective gradient.
@@ -122,8 +122,8 @@ def _batch_to_device(batch, device):
 
 def pretrain_classification(
     encoder,
-    train_assays: list[str],          # .jsonl.gz file paths — ALL training files
-    val_assays: list[str],            # .jsonl.gz file paths — all val files
+    train_assays: list[str],          # .jsonl.gz file paths - ALL training files
+    val_assays: list[str],            # .jsonl.gz file paths - all val files
     n_epochs: int = 100,
     tasks_per_batch: int = 16,        # episodes accumulated per optimizer step
     n_support: Union[int, list] = 64,  # fixed int or list[int] drawn per episode
@@ -395,4 +395,184 @@ def pretrain_regression(
                 break
 
     print(f"\nPretraining complete. Best Val RMSE: {best_val_rmse:.4f}")
+    return model
+
+
+# =============================================================================
+# RATIO ANNEALING TRAINING
+# =============================================================================
+
+def pretrain_classification_anneal(
+    encoder,
+    train_assays: list[str],
+    val_assays: list[str],
+    n_epochs: int = 100,
+    tasks_per_batch: int = 16,
+    n_support: Union[int, list] = 64,
+    n_query: int = 256,
+    n_episodes_train: int = 1000,
+    n_episodes_val: int = 200,
+    lr: float = 1e-4,
+    save_path: str = "ptn_classification_anneal.pt",
+    max_ratio: float = 0.6,    # final scaffold episode fraction (never go to 1.0)
+    seed: int = 42,
+):
+    """
+    Episode-ratio annealing for classification.
+
+    Starts with 100% random episodes, linearly increases the fraction of
+    scaffold-split episodes to max_ratio over training.  The model first
+    learns basic few-shot representations from IID episodes, then is gradually
+    exposed to scaffold OOD gaps without ever losing the random-episode signal.
+
+    Scaffold ratio schedule: 0.0 (epoch 1) -> max_ratio (epoch n_epochs), linear.
+
+    Uses persistent_workers=False on the train loader so that each epoch's
+    workers pick up the updated shift_aware_ratio via pickling on spawn.
+    """
+    set_seed(seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Training on: {device}")
+    print(f"  Ratio annealing: scaffold fraction 0.0 -> {max_ratio:.2f} over {n_epochs} epochs")
+
+    is_fsmol_gnn = isinstance(encoder, FSMolGNNEncoder)
+    is_gnn       = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
+    DatasetCls   = FSMolGraphEpisodeDataset if is_gnn else FSMolEpisodeDataset
+    collate_fn   = graph_episode_collate if is_gnn else None
+    gnn_kwargs   = {"fsmol_style": is_fsmol_gnn} if is_gnn else {}
+
+    n_accum = tasks_per_batch
+
+    # Train dataset: starts with shift_aware=False; ratio updated before each epoch.
+    # persistent_workers=False so workers are re-spawned each epoch and pick up
+    # the updated shift_aware_ratio attribute via pickling.
+    train_dataset = DatasetCls(
+        train_assays, n_episodes_train, n_support, n_query,
+        shift_aware=False, use_binary_labels=True, **gnn_kwargs,
+    )
+    train_loader = DataLoader(
+        train_dataset, batch_size=1, shuffle=False,
+        num_workers=6, pin_memory=not is_gnn, prefetch_factor=4,
+        collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
+        persistent_workers=False,
+    )
+
+    # Val loader: always random, persistent workers fine (ratio never changes)
+    val_dataset = DatasetCls(
+        val_assays, n_episodes_val, n_support, n_query,
+        shift_aware=False, use_binary_labels=True, **gnn_kwargs,
+    )
+    val_loader = DataLoader(
+        val_dataset, batch_size=1, shuffle=False,
+        num_workers=2, pin_memory=not is_gnn, prefetch_factor=2,
+        collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
+        persistent_workers=True,
+    )
+
+    model     = PrototypicalNetworkClassification(encoder).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    use_amp   = (device.type == "cuda")
+    amp_dtype = (torch.bfloat16
+                 if use_amp and torch.cuda.is_bf16_supported()
+                 else torch.float16)
+    print(f"  AMP dtype: {amp_dtype} (bf16 supported: {torch.cuda.is_bf16_supported() if use_amp else 'N/A'})")
+
+    encoder_cfg         = _encoder_config(encoder)
+    best_val_dauprc     = -float("inf")
+    no_improve          = 0
+    early_stop_patience = 50 if is_gnn else 25
+
+    print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}")
+    print(f"  Train files: {len(train_assays)}  |  Val files: {len(val_assays)}")
+    print(f"  Episodes/epoch: {n_episodes_train}  |  Steps/epoch: ~{n_episodes_train // tasks_per_batch}")
+
+    for epoch in range(1, n_epochs + 1):
+        # Linearly anneal scaffold ratio: 0.0 at epoch 1, max_ratio at epoch n_epochs
+        ratio = max_ratio * (epoch - 1) / max(n_epochs - 1, 1)
+        train_dataset.shift_aware_ratio = ratio
+
+        # ------------------------------------------------------------------
+        # Training
+        # ------------------------------------------------------------------
+        model.train()
+        optimizer.zero_grad()
+        accum_count    = 0
+        step           = 0
+        epoch_loss_buf:   list[float] = []
+        epoch_dauprc_buf: list[float] = []
+
+        for batch in train_loader:
+            s_in, s_lbl, q_in, q_lbl = _batch_to_device(batch, device)
+
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                loss, metrics = model.compute_loss_batched(s_in, s_lbl, q_in, q_lbl)
+
+            (loss / n_accum).backward()
+            accum_count += 1
+            epoch_loss_buf.append(loss.item())
+            if not np.isnan(metrics["delta_auprc"]):
+                epoch_dauprc_buf.append(metrics["delta_auprc"])
+
+            if accum_count == n_accum:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
+                accum_count = 0
+                step += 1
+
+        if accum_count > 0:
+            optimizer.zero_grad()
+
+        # ------------------------------------------------------------------
+        # Validation
+        # ------------------------------------------------------------------
+        model.eval()
+        val_dauprc_buf: list[float] = []
+        with torch.no_grad():
+            for vbatch in val_loader:
+                vs_in, vs_lbl, vq_in, vq_lbl = _batch_to_device(vbatch, device)
+                with torch.autocast(device_type=device.type, dtype=amp_dtype,
+                                    enabled=use_amp):
+                    _, vmet = model.compute_loss_batched(vs_in, vs_lbl, vq_in, vq_lbl)
+                if not np.isnan(vmet["delta_auprc"]):
+                    val_dauprc_buf.append(vmet["delta_auprc"])
+
+        train_dauprc = float(np.nanmean(epoch_dauprc_buf)) if epoch_dauprc_buf else float("nan")
+        train_loss   = float(np.mean(epoch_loss_buf))       if epoch_loss_buf   else float("nan")
+        val_dauprc   = float(np.mean(val_dauprc_buf))       if val_dauprc_buf   else float("nan")
+
+        print(
+            f"Epoch {epoch:3d}/{n_epochs} | ratio={ratio:.3f} | Steps: {step} | "
+            f"Train BCE: {train_loss:.4f} | Train dAUPRC: {train_dauprc:+.4f} | "
+            f"Val dAUPRC: {val_dauprc:+.4f}"
+        )
+
+        # ------------------------------------------------------------------
+        # Checkpoint + early stopping
+        # ------------------------------------------------------------------
+        if val_dauprc > best_val_dauprc:
+            best_val_dauprc = val_dauprc
+            no_improve      = 0
+            torch.save({
+                "epoch":               epoch,
+                "model_state_dict":    model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "val_delta_auprc":     best_val_dauprc,
+                "config": {
+                    "model_type":       "classification",
+                    "n_support":        n_support,
+                    "shift_aware":      False,
+                    "anneal_max_ratio": max_ratio,
+                    **encoder_cfg,
+                },
+            }, save_path)
+            print(f"  -> Saved best model (Val dAUPRC: {best_val_dauprc:+.4f})")
+        else:
+            no_improve += 1
+            if no_improve >= early_stop_patience:
+                print(f"\nEarly stopping at epoch {epoch} "
+                      f"(no improvement for {early_stop_patience} epochs).")
+                break
+
+    print(f"\nPretraining complete. Best Val dAUPRC: {best_val_dauprc:+.4f}")
     return model

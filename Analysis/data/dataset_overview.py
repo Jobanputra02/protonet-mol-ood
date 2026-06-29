@@ -1,5 +1,5 @@
-"""
-Dataset Overview — FS-Mol & DrugOOD
+﻿"""
+Dataset Overview - FS-Mol & DrugOOD
 =====================================
 Single-pass scan of all assay files produces a unified stats table that drives:
 
@@ -55,7 +55,7 @@ DRUGOOD_FILES = {
 
 
 # =============================================================================
-# UNIFIED SCANNER — one pass per file, all columns at once
+# UNIFIED SCANNER - one pass per file, all columns at once
 # =============================================================================
 
 def scan_fsmol_assay(filepath: str) -> dict:
