@@ -1,11 +1,15 @@
 ﻿"""
-Chemical Diversity - FS-Mol vs DrugOOD
+Chemical Space - FS-Mol vs DrugOOD
 ========================================
-Three complementary views of how different the two datasets are chemically:
+ONE QUESTION: how chemically different are the FS-Mol (training) and DrugOOD
+(evaluation) corpora? This quantifies the cross-dataset distribution shift the
+zero-shot transfer has to bridge.
+
+Three complementary views:
 
   Section 1 - Molecular properties (mass, heavy atoms, rotatable bonds, aromatic rings)
                Side-by-side comparison: FS-Mol train/test vs DrugOOD train/ood_test
-               Uses structural_variability.py for per-molecule feature computation.
+               Per-molecule feature helpers are defined below (self-contained).
 
   Section 2 - Tanimoto distance distributions
                Internal FS-Mol, internal DrugOOD, and cross-dataset pairwise distances.
@@ -20,7 +24,7 @@ Outputs saved to FIGURES_DIR / RESULTS_DIR (from config.py):
     tsne_fsmol_vs_drugood.png
 
 Usage:
-    python analysis/data/chemical_diversity.py
+    python Analysis/data/chemical_space.py
 """
 
 import gzip
@@ -33,20 +37,90 @@ import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
 from rdkit import Chem                                      # type: ignore
+from rdkit.Chem import Descriptors, rdMolDescriptors        # type: ignore
+from rdkit.Chem.Scaffolds import MurckoScaffold             # type: ignore
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator  # type: ignore
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from config import FSMOL_DIR, DRUGOOD_DIR, DATA_ANALYSIS_FIGURES_DIR, DATA_ANALYSIS_RESULTS_DIR
-from structural_variability import compute_structural_variability, summarize_variability
 
 FIGURES_DIR = DATA_ANALYSIS_FIGURES_DIR
 RESULTS_DIR = DATA_ANALYSIS_RESULTS_DIR
 os.makedirs(FIGURES_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+
+# =============================================================================
+# Per-molecule RDKit features (was _mol_features.py - inlined; only used here)
+# =============================================================================
+
+def compute_mol_features(smiles: str):
+    """Structural features for one molecule, or None if SMILES invalid."""
+    mol = Chem.MolFromSmiles(smiles)  # type: ignore[attr-defined]
+    if mol is None:
+        return None
+    try:
+        scaffold = MurckoScaffold.MurckoScaffoldSmiles(mol=mol, includeChirality=False)
+        generic  = MurckoScaffold.MakeScaffoldGeneric(Chem.MolFromSmiles(scaffold))
+        generic_scaffold_smi = Chem.MolToSmiles(generic)
+    except Exception:
+        generic_scaffold_smi = None
+    return {
+        "smiles":            smiles,
+        "generic_scaffold":  generic_scaffold_smi,
+        "molecular_mass":    Descriptors.ExactMolWt(mol),
+        "n_heavy_atoms":     mol.GetNumHeavyAtoms(),
+        "n_rotatable_bonds": rdMolDescriptors.CalcNumRotatableBonds(mol),
+        "n_aromatic_rings":  rdMolDescriptors.CalcNumAromaticRings(mol),
+    }
+
+
+def compute_structural_variability(smiles_list, deduplicate=True, verbose=True) -> pd.DataFrame:
+    """Per-molecule structural features for a SMILES list (deduplicated by canonical SMILES)."""
+    if deduplicate:
+        canonical_map = {}
+        for smi in smiles_list:
+            mol = Chem.MolFromSmiles(smi)  # type: ignore[attr-defined]
+            if mol is not None:
+                canonical_map[Chem.MolToSmiles(mol)] = smi
+        unique_smiles = list(canonical_map.keys())
+        if verbose:
+            print(f"  Deduplication: {len(smiles_list)} -> {len(unique_smiles)} unique")
+    else:
+        unique_smiles = smiles_list
+
+    rows, n_invalid = [], 0
+    for i, smi in enumerate(unique_smiles):
+        if verbose and i % 5000 == 0:
+            print(f"  Processing {i+1}/{len(unique_smiles)}...", end="\r")
+        feats = compute_mol_features(smi)
+        if feats is None:
+            n_invalid += 1
+            continue
+        rows.append(feats)
+    if verbose:
+        print(f"  Done. {len(rows)} valid, {n_invalid} invalid SMILES.        ")
+    return pd.DataFrame(rows)
+
+
+def summarize_variability(df: pd.DataFrame) -> pd.DataFrame:
+    """Print + return summary stats (mass, heavy atoms, rotatable/aromatic) for a feature df."""
+    numeric_cols = ["molecular_mass", "n_heavy_atoms", "n_rotatable_bonds", "n_aromatic_rings"]
+    summary = df[numeric_cols].describe().round(2)
+    n_unique = df["generic_scaffold"].nunique()
+    print(f"\n  Unique generic scaffolds: {n_unique} / {len(df)} molecules "
+          f"({100 * n_unique / max(len(df),1):.1f}%)")
+    print(f"\n{summary}")
+    return summary
+
 _MORGAN = GetMorganGenerator(radius=2, fpSize=2048)  # type: ignore
 
 DRUGOOD_SCAFFOLD_JSON = os.path.join(DRUGOOD_DIR, "lbap_core_ic50_scaffold.json")
+
+# ===== CONFIG - edit these, then run (no arguments) =====
+SEED   = 42      # subsampling / t-SNE seed
+N_TSNE = 5000    # molecules per dataset in the t-SNE projection (smaller = faster)
+# ========================================================
 
 
 # =============================================================================
@@ -217,7 +291,6 @@ def run_tsne(fsmol_fps: np.ndarray, drugood_fps: np.ndarray, rng: np.random.Rand
     print("SECTION 3: t-SNE (this takes a few minutes)")
     print("=" * 60)
 
-    N_TSNE  = 5000
     fs_idx  = rng.choice(len(fsmol_fps),   size=min(N_TSNE, len(fsmol_fps)),   replace=False)
     do_idx  = rng.choice(len(drugood_fps), size=min(N_TSNE, len(drugood_fps)), replace=False)
     all_fps = np.vstack([fsmol_fps[fs_idx], drugood_fps[do_idx]])
@@ -251,7 +324,7 @@ def run_tsne(fsmol_fps: np.ndarray, drugood_fps: np.ndarray, rng: np.random.Rand
 # =============================================================================
 
 if __name__ == "__main__":
-    rng = np.random.RandomState(42)
+    rng = np.random.RandomState(SEED)
 
     # ── Load SMILES ───────────────────────────────────────────────────────────
     print("Loading SMILES...")

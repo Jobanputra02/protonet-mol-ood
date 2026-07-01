@@ -1,139 +1,30 @@
-﻿# Data Analysis
+# Data Analysis
 
-Scripts for auditing the FS-Mol and DrugOOD datasets before and independently of any model training. All scripts read paths from `config.py` and write outputs to `FIGURES_DIR` / `RESULTS_DIR`.
+Scripts that audit the FS-Mol and DrugOOD datasets **before and independently of any model** — they need only the datasets and `config.py`. Each script answers exactly one question (stated at the top of the file). Outputs go to `DATA_ANALYSIS_FIGURES_DIR` / `DATA_ANALYSIS_RESULTS_DIR`.
 
-For model evaluation results, training configuration, and comparison figures, see [Analysis/model/README.md](../model/README.md) and the [main README](../../README.md).
-
----
-
-## Scripts
-
-### `dataset_overview.py`
-
-Full data audit across all three FS-Mol splits and all three DrugOOD shift files.
-
-**What it does:**
-- Scans every FS-Mol `.jsonl.gz` assay file, counts raw / inexact / invalid / exact molecules per assay
-- Reports what fraction of each assay survives the `Relation == "="` filter and the `MIN_TASK_SIZE=32` filter
-- Computes fraction-active per assay (the random-classifier baseline for ΔAUPRC)
-- Reports DrugOOD per-assay split sizes (train / iid_test / ood_test per shift type)
-
-**Outputs:**
-
-| File | Description |
+| Script | One question it answers |
 |---|---|
-| `results/assay_sizes_fsmol.csv` | Per-assay molecule counts for all FS-Mol splits |
-| `results/data_loss_per_assay.csv` | Per-assay inexact / invalid drop counts |
-| `figures/fig1a_assay_sizes.png` | Assay size distributions (train / valid / test) |
-| `figures/fig1b_fraction_actives.png` | Fraction-active distribution across assays |
-| `figures/fig1c_domain_sizes.png` | DrugOOD domain size distributions |
-| `figures/fig_size_vs_fraction_exact.png` | Assay size vs fraction of exact measurements |
+| `dataset_overview.py` | How much data survives filtering? (assay sizes, fraction-active, per-step data loss, DrugOOD domain sizes) |
+| `scaffold_diversity.py` | How scaffold-diverse is each task? (unique Murcko scaffolds, diversity ratio) |
+| `scaffold_activity.py` | Does scaffold membership predict the activity label? (Cramér's V) |
+| `chemical_space.py` | How chemically different are FS-Mol and DrugOOD? (properties, Tanimoto distance, t-SNE) |
+| `shift_aware_episodes.py` | How many shift-aware *training* episodes actually carry usable signal? |
+
+Each script is self-contained (per-molecule RDKit feature helpers are inlined where used — no shared library file) and has a `# CONFIG` block near the top — edit the variables, run with **no arguments** (same mechanism as `main.py`). Figures are written directly by these scripts.
 
 ```bash
-python Analysis/data/dataset_overview.py
+python Analysis/data/dataset_overview.py     # CONFIG: SPLITS_TO_SCAN (drop "train" for a fast run)
+python Analysis/data/scaffold_diversity.py   # CONFIG: TRAIN_SAMPLE
+python Analysis/data/scaffold_activity.py    # CONFIG: N_SUPPORT / TRAIN_SAMPLE / SEED
+python Analysis/data/chemical_space.py       # CONFIG: N_TSNE / SEED
+python Analysis/data/shift_aware_episodes.py # CONFIG: N_EPISODES / N_SUPPORT
 ```
 
 ---
 
-### `scaffold_analysis.py`
+## Key dataset facts
 
-Per-task Bemis-Murcko scaffold diversity across all FS-Mol splits.
-
-**What it does:**
-- For each assay passing `MIN_TASK_SIZE=32`, computes number of unique Murcko scaffolds and scaffold diversity ratio (`n_unique_scaffolds / n_molecules`)
-- Runs on test + valid (full scan) and train (sampled, default 2000 files)
-- Histogram plots for both metrics per split
-
-**Outputs:**
-
-| File | Description |
-|---|---|
-| `results/scaffold_diversity_per_task_all_splits.csv` | Per-assay scaffold diversity for all splits |
-| `figures/fig_scaffold_diversity_per_task.png` | Histogram grid: unique scaffolds and diversity ratio |
-
-```bash
-python Analysis/data/scaffold_analysis.py
-```
-
----
-
-### `structural_variability.py`
-
-**Library file - not run directly.** Imported by `chemical_diversity.py`.
-
-Provides molecule-level feature computation via RDKit:
-
-| Function | Description |
-|---|---|
-| `compute_mol_features(smiles)` | Molecular mass, heavy atom count, rotatable bonds, aromatic rings, generic scaffold |
-| `compute_structural_variability(smiles_list)` | Applies the above to a list, returns a DataFrame |
-| `summarize_variability(df)` | Prints mean / std / range summary |
-
----
-
-### `scaffold_activity_analysis.py`
-
-Measures how strongly scaffold membership predicts activity labels within each assay.
-
-**What it does:**
-- Assigns each molecule to context or query set via `assign_context_query()` - scaffolds that appear in the context set are "context scaffolds"; novel scaffolds are query-only
-- Computes **Cramér's V** (chi-squared effect size) per assay: V=0 means scaffold groups and activity labels are independent; V=1 means scaffold group perfectly predicts label
-- Answers the question: "Is scaffold-activity degeneracy a measurable, widespread property of FS-Mol, or only an edge case?"
-- Runs on a 2000-assay sample of FS-Mol train by default; re-runs on all test assays via `--split test`
-
-**Cramér's V:**
-
-```
-V = sqrt( chi2 / (n * (min(r, c) - 1)) )
-```
-
-where `n` = molecules, `r` = scaffold groups, `c` = 2 (binary labels). V is in [0, 1].
-
-**Outputs:**
-
-| File | Description |
-|---|---|
-| `results/scaffold_context_query.csv` | Per-molecule scaffold/context/query assignment |
-| `results/scaffold_degeneracy.csv` | Per-assay Cramér's V |
-| `figures/fig_scaffold_activity_corr.png` | Histogram of V across assays, with percentile markers |
-
-```bash
-python Analysis/data/scaffold_activity_analysis.py
-```
-
----
-
-### `chemical_diversity.py`
-
-Chemical space comparison between FS-Mol and DrugOOD. Three complementary analyses.
-
-**What it does:**
-
-| Section | Description |
-|---|---|
-| 1 - Molecular properties | Mean molecular mass, heavy atoms, rotatable bonds, aromatic rings for FS-Mol train/test and DrugOOD train/ood_test. Reports generic scaffold overlap between datasets. |
-| 2 - Tanimoto distances | Pairwise Tanimoto distance distributions: FS-Mol internal, DrugOOD internal, cross-dataset. Higher cross-distance = more chemical shift. |
-| 3 - t-SNE | 2D projection of 5000 FS-Mol + 5000 DrugOOD molecules using ECFP4 with Tanimoto metric. |
-
-**Outputs:**
-
-| File | Description |
-|---|---|
-| `results/structural_var_comparison.csv` | Mean molecular properties per dataset |
-| `figures/tanimoto_distances.png` | Tanimoto distance distribution histogram |
-| `figures/tsne_fsmol_vs_drugood.png` | t-SNE coloured by dataset source |
-
-```bash
-python Analysis/data/chemical_diversity.py
-```
-
----
-
-## Dataset Statistics
-
-### FS-Mol - Data Loss After Filtering
-
-Only molecules with `Relation == "="` (exact measurements) are kept. Assays with fewer than 32 exact molecules are dropped entirely.
+### FS-Mol — data loss after filtering (`Relation == "="`, then drop tasks < 32 molecules)
 
 | Split | Raw molecules | Inexact dropped | Bad/missing | Task-too-small | **Used** | Tasks kept |
 |---|---|---|---|---|---|---|
@@ -141,9 +32,7 @@ Only molecules with `Relation == "="` (exact measurements) are kept. Assays with
 | Valid | 19,008 | 2,266 (11.9%) | 83 (0.4%) | 36 (0.2%) | **16,623 (87.5%)** | 38 / 40 (95%) |
 | Test | 56,220 | 12,429 (22.1%) | 129 (0.2%) | 0 (0.0%) | **43,662 (77.7%)** | 154 / 157 (98%) |
 
-The train split has the highest inexact fraction (38.3% censored), compared to 22.1% in test and 11.9% in valid. 37% of train assays are too small to use after filtering, leaving 16,930 usable training tasks.
-
-### FS-Mol - Assay Size Distribution (after filtering, ≥32 molecules)
+### FS-Mol — assay size (after filtering)
 
 | Split | Tasks | Mean | Median | Min | Max |
 |---|---|---|---|---|---|
@@ -151,106 +40,35 @@ The train split has the highest inexact fraction (38.3% censored), compared to 2
 | Valid | 38 | 437 | 157 | 109 | 4,697 |
 | Test | 154 | 284 | 157 | 63 | 3,594 |
 
-Test and valid assays are ~3.5× larger than train (median 157 vs 44). Test/valid are curated, larger ChEMBL assays; train includes many small assays that barely pass the size filter. The ΔAUPRC drop at support sizes 256/512 in evaluation is partly due to selection bias - only very large assays qualify at those sizes.
+Test/valid assays are ~3.5× larger than train. **Only very large assays qualify at support sizes 256/512**, so the support-size sweep at n=256/512 is computed on a different (smaller, harder) assay population — a selection effect, not a model effect. The `fixed_assay_curves.py` helper in `../model/` controls for this.
 
-**Assay size vs fraction-exact correlation:**
+### DrugOOD — label balance (verified, `lbap_core_ic50_scaffold`)
 
-| Split | Pearson r | Spearman ρ | p-value |
+| Split | active | inactive | % active |
 |---|---|---|---|
-| Train | −0.060 | −0.106 | < 0.001 |
-| Valid | −0.016 | −0.204 | 0.21 (n.s.) |
-| Test | −0.285 | **−0.405** | < 0.001 |
+| train (context pool) | 20,799 | 1,226 | **94%** |
+| ood_test | 15,144 | 4,336 | 78% |
+| iid_test | 28,226 | 3,162 | 90% |
 
-Larger assays tend to have a lower fraction of exact measurements - significant in train and test, not in valid (only 40 assays).
+DrugOOD uses a single global pIC50 threshold, so the context pool is heavily active-skewed. Uniform context sampling therefore builds the inactive prototype from ~0–1 molecules at small context sizes, and the ΔAUPRC ceiling on `ood_test` is only `1 − 0.78 = 0.22`. The evaluation now **stratifies** the context sample (`data.stratified_context_indices`) so both classes are represented. Note this differs from FS-Mol training, where `Property` is balanced ~50/50 per assay (verified: 29/29 on a sample assay) — "active" means different things in train vs eval.
 
-### DrugOOD - Per-Assay Size Summary
+### Scaffold–activity degeneracy (Cramér's V, `scaffold_activity.py`)
 
-| Shift | Split | Assays | Mean molecules | Median | Min | Max |
-|---|---|---|---|---|---|---|
-| Scaffold | train | 1,017 | 21.7 | 12 | 1 | 467 |
-| Scaffold | iid_test | 1,195 | 26.3 | 16 | 1 | 435 |
-| Scaffold | ood_test | 747 | 26.1 | 12 | 1 | 307 |
-| Size | train | 1,161 | 32.3 | 20 | 1 | 604 |
-| Size | iid_test | 1,055 | 12.1 | 7 | 1 | 192 |
-| Size | ood_test | 760 | 22.1 | 9 | 1 | 357 |
-| Assay | train | 327 | 106.9 | 71 | 44 | 610 |
-| Assay | iid_test | 327 | 36.6 | 25 | 15 | 204 |
-| Assay | ood_test | 716 | 27.2 | 29 | 1 | 52 |
-
-Many DrugOOD assays have as few as 1 molecule in some splits. These produce NaN ΔAUPRC (cannot rank a single molecule). The assay shift has the largest and most consistent train assays (median 71), which likely explains why it shows the best generalisation performance in model evaluation.
-
----
-
-### Scaffold-Activity Degeneracy (Cramér's V)
-
-Results from `scaffold_activity_analysis.py` on 2000 sampled FS-Mol **training** assays.
-
-| Statistic | Value |
-|---|---|
-| Assays analysed | 11,768 (pass filter) |
-| Mean V | 0.680 |
-| Median V | 0.716 |
-| V > 0.10 | 97.6% of assays |
-| V > 0.30 | 90.9% of assays |
-
-**Interpretation:** In nearly all FS-Mol training assays, scaffold group membership is a strong predictor of the binary activity label (V > 0.30 by conventional thresholds). This is not a rare edge case - it is the default structure of the dataset.
-
-**Why this matters for prototypical networks:** Scaffold-split evaluation places novel scaffolds in the query set. When V is high, the query distribution is systematically different from the context distribution not just in structure but also in label distribution. A prototype built from context molecules may therefore fail to generalise even if the embedding captures chemical similarity. This sets an upper ceiling on scaffold-split ΔAUPRC that is fundamentally different from the random-split ceiling.
-
-**Test set comparison:** The same analysis on the 157 FS-Mol test assays yields a median V = 0.920, even higher than training. Test assays are larger and more curated, which concentrates the scaffold-activity correlation further.
+On 2000 sampled FS-Mol training assays: mean V = 0.68, median 0.72; V > 0.30 in 91% of assays. Scaffold membership strongly predicts the binary label in almost all assays. **Implication for evaluation:** a scaffold split shifts the *label* distribution, not just the structure — so a fair scaffold split must keep both classes present in the support set (see `data.build_fair_split_indices`).
 
 ---
 
 ## Figures
 
-**Figure 1(a) - Assay size distributions (train / valid / test):**
+All generated into `outputs/figures/data_analysis/`:
 
-![Fig 1a](../../outputs/figures/data_analysis/fig1a_assay_sizes.png)
-
-**Figure 1(b) - Fraction-active distribution across assays:**
-
-![Fig 1b](../../outputs/figures/data_analysis/fig1b_fraction_actives.png)
-
-**Figure 1(c) - DrugOOD domain size distributions:**
-
-![Fig 1c](../../outputs/figures/data_analysis/fig1c_domain_sizes.png)
-
-**Figure - Assay size vs fraction of exact measurements:**
-
-![Size vs exact](../../outputs/figures/data_analysis/fig_size_vs_fraction_exact.png)
-
-**Figure - Per-task scaffold diversity across splits:**
-
-![Scaffold diversity](../../outputs/figures/data_analysis/fig_scaffold_diversity_per_task.png)
-
-**Figure - Scaffold-activity correlation (Cramér's V distribution, training assays):**
-
-![Scaffold activity correlation](../../outputs/figures/data_analysis/fig_scaffold_activity_corr.png)
-
-**Figure - Tanimoto distance distributions (FS-Mol vs DrugOOD):**
-
-![Tanimoto distances](../../outputs/figures/data_analysis/tanimoto_distances.png)
-
-**Figure - t-SNE chemical space (FS-Mol vs DrugOOD, 5000 molecules each):**
-
-![t-SNE chemical space](../../outputs/figures/data_analysis/tsne_fsmol_vs_drugood.png)
-
-> Regenerate with: `python Analysis/data/chemical_diversity.py`
-
----
-
-## Model Comparison Figures
-
-These figures live in `data_analysis/` but are generated by the model pipeline - see [Analysis/model/README.md](../model/README.md) for details and the per-model figure sections.
-
-**All models - random vs scaffold split (thesis main figure):**
-![Random vs Scaffold](../../outputs/figures/data_analysis/fig_comparison_random_vs_scaffold.png)
-
-**All models - scaffold OOD split only:**
-![Scaffold comparison](../../outputs/figures/data_analysis/fig_comparison_scaffold.png)
-
-**All models - random split only:**
-![Random comparison](../../outputs/figures/data_analysis/fig_comparison_random.png)
-
-**All models - DrugOOD assay OOD:**
-![DrugOOD comparison](../../outputs/figures/data_analysis/fig_comparison_drugood_assay.png)
+| Figure | Produced by |
+|---|---|
+| `fig1a_assay_sizes.png` | `dataset_overview.py` |
+| `fig1b_fraction_actives.png` | `dataset_overview.py` |
+| `fig1c_domain_sizes.png` | `dataset_overview.py` |
+| `fig_size_vs_fraction_exact.png` | `dataset_overview.py` |
+| `fig_scaffold_diversity_per_task.png` | `scaffold_diversity.py` |
+| `fig_scaffold_activity_corr.png` | `scaffold_activity.py` |
+| `tanimoto_distances.png` | `chemical_space.py` |
+| `tsne_fsmol_vs_drugood.png` | `chemical_space.py` |

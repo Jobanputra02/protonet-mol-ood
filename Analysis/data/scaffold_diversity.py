@@ -1,7 +1,11 @@
 ﻿"""
 Per-Task Scaffold Diversity - FS-Mol All Splits
 ================================================
-For each assay (task), computes:
+ONE QUESTION: how scaffold-diverse is each task (assay)? This sets how much
+scaffold variety a support set can actually span, which bounds how meaningful a
+scaffold-split episode is.
+
+For each assay, computes:
   - n_unique_scaffolds       : distinct Bemis-Murcko scaffolds
   - scaffold_diversity_ratio : n_unique_scaffolds / n_molecules
 
@@ -13,7 +17,7 @@ Outputs saved to FIGURES_DIR / RESULTS_DIR (from config.py):
     fig_scaffold_diversity_per_task.png
 
 Usage:
-    python analysis/data/scaffold_analysis.py
+    python Analysis/data/scaffold_diversity.py
 """
 
 import gzip
@@ -34,8 +38,10 @@ RESULTS_DIR = DATA_ANALYSIS_RESULTS_DIR
 os.makedirs(FIGURES_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-MIN_TASK_SIZE = 32
+# ===== CONFIG - edit these, then run (no arguments) =====
+MIN_TASK_SIZE = 32     # assays with fewer exact molecules are skipped
 TRAIN_SAMPLE  = 2000   # train files to sample (None = all ~26k, very slow)
+# ========================================================
 
 
 # =============================================================================

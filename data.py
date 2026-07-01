@@ -213,28 +213,8 @@ class EpisodeSampler:
             return self._sample_random_episode(dataset, use_binary=use_binary)
 
     def _sample_shift_aware_episode(self, dataset: AssayDataset, use_binary: bool = False):
-        """
-        Support and query come from DIFFERENT scaffold families.
-        Uses whatever molecules are available - no replacement, capped to pool size.
-        Falls back to random if fewer than 2 usable scaffold groups.
-        """
-        n_sup_target = self._draw_n_support()
-        min_group    = max(2, n_sup_target // 4)
-        usable_keys  = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
-
-        if len(usable_keys) < 2:
-            return self._sample_random_episode(dataset, use_binary=use_binary)
-
-        chosen = np.random.choice(len(usable_keys), size=2, replace=False)
-        support_pool = dataset.scaffold_groups[usable_keys[chosen[0]]]
-        query_pool   = dataset.scaffold_groups[usable_keys[chosen[1]]]
-
-        # Cap to available pool size - no replacement, no duplication
-        n_sup = min(n_sup_target,  len(support_pool))
-        n_qry = min(self.n_query,  len(query_pool))
-        sup_idx = np.random.choice(support_pool, size=n_sup, replace=False)
-        qry_idx = np.random.choice(query_pool,   size=n_qry, replace=False)
-
+        """Scaffold-disjoint episode (see _get_episode_indices_shift_aware), as tensors."""
+        sup_idx, qry_idx = self._get_episode_indices_shift_aware(dataset)
         return self._indices_to_tensors(dataset, sup_idx, qry_idx, use_binary=use_binary)
 
     def _sample_random_episode(self, dataset: AssayDataset, use_binary: bool = False):
@@ -269,19 +249,28 @@ class EpisodeSampler:
     # ------------------------------------------------------------------
 
     def _get_episode_indices_shift_aware(self, dataset: "AssayDataset"):
-        n_sup_target = self._draw_n_support()
-        min_group    = max(2, n_sup_target // 4)
-        usable_keys  = [k for k, v in dataset.scaffold_groups.items() if len(v) >= min_group]
-        if len(usable_keys) < 2:
+        """Scaffold-disjoint support/query, built like the fair EVAL split: support spans
+        MULTIPLE whole scaffold groups (size adapts to the assay), query = held-out groups,
+        with BOTH classes enforced in the support. Falls back to a random episode only when
+        a 2-class scaffold-disjoint split is genuinely impossible for this assay (e.g. a
+        single scaffold, or each scaffold is one pure class).
+
+        This replaces the old single-group + min_group>=n/4 sampler, under which ~79% of
+        episodes fell back to random and ~50% of the rest had single-class (zero-gradient)
+        support - i.e. the shift-aware manipulation barely happened."""
+        n_sup_target    = self._draw_n_support()
+        n_total         = len(dataset)
+        adaptive_target = min(n_sup_target, max(2, n_total // 2))
+        sp = build_fair_split_indices(
+            n_total, dataset.scaffold_groups,
+            getattr(dataset, "binary_labels", None),
+            adaptive_target, "scaffold", np.random,
+            n_query_cap=self.n_query, require_both_classes=True,
+            min_support=min(8, adaptive_target),
+        )
+        if sp is None:
             return self._get_episode_indices_random(dataset)
-        chosen = np.random.choice(len(usable_keys), size=2, replace=False)
-        sup_pool = dataset.scaffold_groups[usable_keys[chosen[0]]]
-        qry_pool = dataset.scaffold_groups[usable_keys[chosen[1]]]
-        n_sup = min(n_sup_target,  len(sup_pool))
-        n_qry = min(self.n_query,  len(qry_pool))
-        sup_idx = np.random.choice(sup_pool, size=n_sup, replace=False)
-        qry_idx = np.random.choice(qry_pool, size=n_qry, replace=False)
-        return sup_idx, qry_idx
+        return sp
 
     def _get_episode_indices_random(self, dataset: "AssayDataset"):
         """
@@ -315,6 +304,161 @@ class EpisodeSampler:
         # Fallback: pure random
         all_idx = np.random.permutation(n_total)
         return all_idx[:n_sup], all_idx[n_sup:n_sup + n_qry]
+
+
+# =============================================================================
+# FAIR SPLIT CONSTRUCTION  (shared by ProtoNet eval, RF, and head baselines)
+# =============================================================================
+
+def build_fair_split_indices(
+    n_total: int,
+    scaffold_groups: dict,
+    binary_labels,
+    n_support: int,
+    split_type: str,
+    rng,
+    mol_sizes=None,
+    n_query_cap: Optional[int] = None,
+    require_both_classes: bool = True,
+    max_retries: int = 20,
+    min_support: Optional[int] = None,
+):
+    """
+    Build (support_idx, query_idx) with ONE leakage-free protocol used identically
+    by ProtoNet, RandomForest, and the embedding+head baselines. The whole point is
+    that every model evaluated on a given (assay, support_size, repeat) sees the
+    SAME support and query molecules, so differences reflect the model, not the split.
+
+    Protocols:
+      - "random":   n_support DISTINCT molecules sampled at random (no replacement);
+                    query = all remaining molecules.
+      - "scaffold": accumulate WHOLE Murcko scaffold groups (in shuffled order) until
+                    at least n_support DISTINCT molecules are collected; query = all
+                    molecules from the remaining groups. No molecule is ever duplicated
+                    and support spans several scaffolds, exactly like the RF baseline.
+                    (This replaces the old single-group + with-replacement protocol.)
+      - "size":     support sampled (no replacement) from the smallest 50% of molecules
+                    by heavy-atom count; query = the largest 50%.
+
+    Class balance: when binary_labels is available and require_both_classes is True,
+    the split is re-drawn (up to max_retries) until the support contains at least one
+    active and one inactive molecule. If that is impossible the function returns None,
+    and the caller skips that (assay, support_size, repeat) for ALL models equally.
+
+    min_support: evaluation passes None -> the scaffold split must reach EXACTLY
+    n_support (fixed support-size buckets for the curves). Training passes a small
+    floor -> the scaffold split accepts a SMALLER multi-group support (down to
+    min_support) instead of bailing to a random episode, so shift-aware episodes
+    actually fire on assays that can't yield a full n_support scaffold-disjoint split.
+
+    Returns:
+        (sup_idx, qry_idx) as int numpy arrays, or None if no valid split exists.
+        For scaffold splits the support may exceed n_support (whole final group is
+        kept); callers should record len(sup_idx) as the actual support size.
+    """
+    labels = None
+    if binary_labels is not None and require_both_classes:
+        labels = np.asarray(binary_labels)
+        if len(np.unique(labels[np.isin(labels, [0, 1])])) < 2:
+            return None  # assay is single-class overall - no balanced split possible
+
+    def _both_classes(idx) -> bool:
+        if labels is None:
+            return True
+        u = np.unique(labels[idx])
+        return (0 in u) and (1 in u)
+
+    def _cap_query(qry_idx):
+        if n_query_cap is not None and len(qry_idx) > n_query_cap:
+            return rng.choice(qry_idx, size=n_query_cap, replace=False)
+        return qry_idx
+
+    for _ in range(max_retries):
+        if split_type == "random":
+            if n_total <= n_support:
+                return None
+            perm    = rng.permutation(n_total)
+            sup_idx = perm[:n_support]
+            qry_idx = perm[n_support:]
+
+        elif split_type == "scaffold":
+            keys = list(scaffold_groups.keys())
+            if len(keys) < 2:
+                return None
+            rng.shuffle(keys)
+            floor = n_support if min_support is None else min_support
+            # Accumulate WHOLE groups into support up to n_support, but never consume
+            # the final group - it (plus any others past the cut) becomes the query, so
+            # support and query scaffolds stay disjoint even on small assays.
+            sup_list: list[int] = []
+            cut = 0
+            for ki in range(len(keys) - 1):
+                if len(sup_list) >= n_support:
+                    break
+                sup_list.extend(scaffold_groups[keys[ki]])
+                cut = ki + 1
+            sup_idx = np.array(sup_list, dtype=np.int64)
+            qry_idx = np.array(
+                [i for k in keys[cut:] for i in scaffold_groups[k]], dtype=np.int64
+            )
+            if len(sup_idx) < floor or len(qry_idx) == 0:
+                return None
+
+        elif split_type == "size":
+            if mol_sizes is None:
+                return None
+            order = np.argsort(mol_sizes)
+            mid   = n_total // 2
+            small, large = order[:mid], order[mid:]
+            if len(small) < n_support or len(large) == 0:
+                return None
+            sup_idx = rng.choice(small, size=n_support, replace=False)
+            qry_idx = large
+
+        else:
+            raise ValueError(f"Unknown split_type: {split_type}")
+
+        if _both_classes(sup_idx):
+            return np.asarray(sup_idx, dtype=np.int64), _cap_query(np.asarray(qry_idx, dtype=np.int64))
+
+    return None
+
+
+def stratified_context_indices(binary_labels, n_context: int, rng) -> np.ndarray:
+    """
+    Sample n_context indices preserving the active/inactive ratio (capped so that
+    both classes are represented whenever possible). Used for DrugOOD context, where
+    the train pool is 78-94% active and uniform sampling otherwise produces a
+    near-empty inactive prototype at small context sizes.
+
+    Falls back to uniform sampling when labels are missing or single-class.
+    """
+    n_pool = len(binary_labels) if binary_labels is not None else 0
+    n_context = min(n_context, n_pool)
+    if binary_labels is None:
+        return rng.choice(n_pool, size=n_context, replace=False)
+
+    labels = np.asarray(binary_labels)
+    pos = np.where(labels == 1)[0]
+    neg = np.where(labels == 0)[0]
+    if len(pos) == 0 or len(neg) == 0:
+        return rng.choice(n_pool, size=n_context, replace=False)
+
+    # Allocate proportionally but guarantee >=1 of the minority class.
+    frac_pos = len(pos) / n_pool
+    n_pos = int(round(frac_pos * n_context))
+    n_pos = max(1, min(n_pos, n_context - 1, len(pos)))
+    n_neg = n_context - n_pos
+    if n_neg > len(neg):
+        n_neg = len(neg)
+        n_pos = min(n_context - n_neg, len(pos))
+
+    sel = np.concatenate([
+        rng.choice(pos, size=n_pos, replace=False),
+        rng.choice(neg, size=n_neg, replace=False),
+    ])
+    rng.shuffle(sel)
+    return sel
 
 
 # =============================================================================
@@ -710,7 +854,13 @@ class DrugOODEvalDataset:
         """
         rng   = np.random.RandomState(seed)
         n_ctx = min(context_size, len(self.context_fp))
-        idx   = rng.choice(len(self.context_fp), size=n_ctx, replace=False)
+        # Stratify by binary label when available: the DrugOOD train pool is 78-94%
+        # active, so uniform sampling leaves the inactive prototype built from ~0-1
+        # molecules at small context sizes. Stratification keeps both classes present.
+        if use_binary and self.context_binary is not None:
+            idx = stratified_context_indices(self.context_binary, n_ctx, rng)
+        else:
+            idx = rng.choice(len(self.context_fp), size=n_ctx, replace=False)
 
         ctx_fp = self.context_fp[idx]
         if use_binary and self.context_binary is not None:

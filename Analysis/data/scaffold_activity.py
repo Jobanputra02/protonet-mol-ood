@@ -1,7 +1,11 @@
 ﻿"""
 Scaffold-Activity Degeneracy Analysis
 ======================================
-For each FS-Mol training assay, answers two questions:
+ONE QUESTION: does scaffold membership predict the activity label? If yes, a
+scaffold split also shifts the label distribution (not just the structure), which
+is the confound a fair scaffold split must keep in mind.
+
+For each FS-Mol training assay, answers two sub-questions:
 
   1. Context/query assignment: split molecules by scaffold group and add a
      'role' column (context / query). This mirrors the scaffold-split evaluation
@@ -18,7 +22,7 @@ Outputs:
     figures/data_analysis/fig_scaffold_activity_corr.png
 
 Usage:
-    python Analysis/data/scaffold_activity_analysis.py
+    python Analysis/data/scaffold_activity.py
 """
 
 import gzip
@@ -41,10 +45,12 @@ from config import FSMOL_TRAIN, DATA_ANALYSIS_FIGURES_DIR, DATA_ANALYSIS_RESULTS
 os.makedirs(DATA_ANALYSIS_FIGURES_DIR, exist_ok=True)
 os.makedirs(DATA_ANALYSIS_RESULTS_DIR, exist_ok=True)
 
-MIN_TASK_SIZE = 32
+# ===== CONFIG - edit these, then run (no arguments) =====
+MIN_TASK_SIZE = 32     # assays with fewer exact molecules are skipped
 N_SUPPORT     = 16     # molecules assigned to context
 TRAIN_SAMPLE  = 2000   # training assays to sample (None = all ~16k, slow)
 SEED          = 42
+# ========================================================
 
 
 # =============================================================================

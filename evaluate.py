@@ -376,7 +376,16 @@ def evaluate_drugood_multiscale(
                     for seed in seeds:
                         if gnn:
                             rng = np.random.RandomState(seed)
-                            idx = rng.choice(len(eval_dataset.context_smiles), size=n_ctx, replace=False)
+                            # Stratify context by binary label for classification (the
+                            # DrugOOD train pool is heavily active-skewed); uniform for
+                            # regression or when binary labels are unavailable.
+                            if is_classif and eval_dataset.context_binary is not None:
+                                from data import stratified_context_indices
+                                idx = stratified_context_indices(
+                                    eval_dataset.context_binary, n_ctx, rng)
+                            else:
+                                idx = rng.choice(
+                                    len(eval_dataset.context_smiles), size=n_ctx, replace=False)
                             ctx_batch = PyGBatch.from_data_list(
                                 [ctx_graphs_cache[i] for i in idx]
                             ).to(device)
@@ -497,7 +506,7 @@ def _load_model_from_checkpoint(
 
     if model_type == "classification":
         val_metric = checkpoint.get("val_delta_auprc", None)
-        val_str    = f"ΔAUPRC={val_metric:+.4f}" if val_metric is not None else "?"
+        val_str    = f"dAUPRC={val_metric:+.4f}" if val_metric is not None else "?"
     else:
         val_metric = checkpoint.get("val_rmse", checkpoint.get("val_loss", None))
         val_str    = f"RMSE={val_metric:.4f}" if val_metric is not None else "?"

@@ -110,6 +110,8 @@ All values are mean ΔAUPRC on the FS-Mol held-out test set (157 assays after fi
 
 ### FS-Mol Test - Mean ΔAUPRC (Scaffold Split)
 
+> ⚠️ **All scaffold values below are from the broken evaluation pipeline** (`evaluate.py` scaffold split had a bug - all values ~0.05 are artifacts, not real performance). Corrected scaffold results will come from `baseline_grid.py` (Tables 4–5 above). Only the random and size split tables above are valid.
+
 | Model | Seeds | n=16 | n=32 | n=64 | n=128 | n=256 (N=29) | n=512 (N=11) |
 |---|---|---|---|---|---|---|---|
 | *RF baseline (per-task, fixed params)* | - | *0.079* | *0.101* | *0.129* | *0.182* | *0.135* | *0.189* |
@@ -188,6 +190,125 @@ Inside-task OOD: support and query from different scaffold groups within the sam
 
 ---
 
+---
+
+## Baseline Grid: Representation × Head
+
+The baseline grid answers one question: **what drives performance - the representation (raw ECFP vs learned embedding) or the inference head?**
+
+Every head receives the **same support/query split** for a given (assay, n, repeat), so differences between heads are purely algorithmic, not due to different data. The frozen checkpoint is used only as an encoder; no retraining happens.
+
+### Prediction Heads
+
+| Head | Abbreviation | Representation | Type | How it works |
+|---|---|---|---|---|
+| ProtoNet (Euclidean) | PN-E | Embedding | Mean-prototype | Class mean in embedding space; Euclidean distance to classify query |
+| ProtoNet (Mahalanobis) | PN-M | Embedding | Mean-prototype | Same prototypes; Mahalanobis distance with shrinkage covariance from support set |
+| Logistic Regression | LogReg | Embedding | Adaptive | StandardScaler + L2 LogReg (C=1.0, max_iter=1000) fit fresh on each support set |
+| k-Nearest Neighbours | kNN | Embedding | Adaptive | StandardScaler + kNN (k=5) fit fresh on each support set |
+| ECFP ProtoNet (Euclidean) | ecfp-PN | Raw ECFP | Mean-prototype | PN-E on raw 2048-bit ECFP4 fingerprints - no encoder at all |
+| ECFP Logistic Regression | ecfp-LR | Raw ECFP | Adaptive | LogReg on raw ECFP4 - no encoder |
+| ECFP Random Forest | RF | Raw ECFP | Adaptive | RandomForest (100 trees, max_depth=10) on raw ECFP4 - strongest non-meta baseline |
+
+**Why these 7?** They form a 2×2 grid (representation × head family) plus RF as an extra adaptive ECFP baseline:
+
+```
+                 | Mean-prototype  | Adaptive (fit per task)
+-----------------+-----------------+-------------------------
+Raw ECFP         | ecfp-PN         | ecfp-LR, RF
+Learned embedding| PN-E, PN-M      | LogReg, kNN
+```
+
+**Why PN-E and PN-M separately?** Training uses Euclidean (numerically stable from random init); eval uses Mahalanobis (the FS-Mol paper's standard). Comparing them tests how much the distance metric matters once the embedding is trained.
+
+**Why ECFP heads alongside embedding heads?** To isolate the encoder's contribution. If ecfp-LR ≈ emb-LogReg, the MLP encoder adds nothing over the raw fingerprint. If emb-PN-M >> ecfp-PN, the encoder's geometry is what matters, not the inference head.
+
+**ecfp_* heads run once** (independent of checkpoint) and are merged with emb_* heads per checkpoint into one CSV.
+
+---
+
+### Table 1 - Raw ECFP Baselines (no meta-training, encoder-independent)
+
+> Source: `ecfp_baseline_heads.csv` (shared across all runs, corrected hash). Values are identical regardless of which checkpoint is used — raw ECFP fingerprints only.
+
+| Support | RF | LogReg | PN-E | RF | LogReg | PN-E | RF | LogReg | PN-E |
+|---|---|---|---|---|---|---|---|---|---|
+| | **Random Split** | | | **Scaffold Split** | | | **Size Split** | | |
+| 16 | 0.0815 | 0.0818 | 0.0587 | 0.0657 | 0.0657 | 0.0481 | 0.0510 | 0.0543 | 0.0296 |
+| 32 | 0.1013 | 0.0994 | 0.0764 | 0.0844 | 0.0785 | 0.0601 | 0.0639 | 0.0650 | 0.0426 |
+| 64 | 0.1279 | 0.1146 | 0.0934 | 0.1073 | 0.0937 | 0.0774 | 0.0736 | 0.0693 | 0.0453 |
+| 128 | 0.1573 | 0.1416 | 0.1160 | 0.1453 | 0.1247 | 0.1083 | 0.0791 | 0.0644 | 0.0404 |
+| 256 | 0.1653 | 0.1348 | 0.1192 | 0.1461 | 0.1146 | 0.1061 | 0.1230 | 0.0915 | 0.0614 |
+| 512 | 0.1795 | 0.1286 | 0.1090 | 0.1696 | 0.1132 | 0.1058 | 0.1449 | 0.0732 | 0.0848 |
+
+Key takeaways: RF consistently beats LogReg beats raw PN-E. Scaffold split costs ~0.04–0.05 ΔAUPRC vs random at same n. Size split collapses at n=128 (only 30 qualifying assays, harder subset).
+
+---
+
+### Table 2 - ECFP + Random (mean ± std, 3 seeds: 0, 1, 2)
+
+> emb_* heads use the ECFP MLP encoder trained with random episodes.
+
+| Support | PN-M | PN-E | LogReg | kNN | PN-M | PN-E | LogReg | kNN | PN-M | PN-E | LogReg | kNN |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| | **Random Split** | | | | **Scaffold Split** | | | | **Size Split** | | | |
+| 16 | 0.125+-0.002 | **0.128+-0.001** | 0.101+-0.002 | 0.090+-0.001 | 0.119+-0.002 | **0.123+-0.002** | 0.095+-0.002 | 0.088+-0.003 | 0.109+-0.000 | **0.113+-0.001** | 0.091+-0.001 | 0.077+-0.002 |
+| 32 | **0.142+-0.002** | 0.142+-0.002 | 0.124+-0.001 | 0.105+-0.001 | 0.134+-0.001 | **0.135+-0.002** | 0.116+-0.003 | 0.100+-0.002 | **0.122+-0.002** | 0.121+-0.003 | 0.101+-0.002 | 0.084+-0.001 |
+| 64 | **0.162+-0.002** | 0.158+-0.001 | 0.154+-0.001 | 0.121+-0.002 | **0.151+-0.001** | 0.149+-0.002 | 0.135+-0.001 | 0.110+-0.001 | **0.134+-0.002** | 0.131+-0.003 | 0.119+-0.001 | 0.092+-0.004 |
+| 128 | 0.193+-0.001 | 0.188+-0.003 | **0.194+-0.003** | 0.145+-0.003 | **0.185+-0.002** | 0.179+-0.001 | 0.178+-0.000 | 0.133+-0.000 | 0.041+-0.009 | **0.042+-0.007** | 0.038+-0.008 | 0.023+-0.004 |
+| 256 | 0.090+-0.002 | 0.087+-0.002 | **0.111+-0.002** | 0.065+-0.006 | 0.082+-0.002 | 0.081+-0.002 | **0.096+-0.001** | 0.058+-0.005 | 0.053+-0.002 | 0.049+-0.005 | **0.061+-0.003** | 0.024+-0.004 |
+| 512 | 0.081+-0.004 | 0.076+-0.005 | **0.104+-0.008** | 0.050+-0.005 | 0.067+-0.000 | 0.063+-0.002 | **0.087+-0.005** | 0.036+-0.005 | 0.048+-0.010 | 0.046+-0.010 | **0.061+-0.004** | 0.024+-0.002 |
+
+---
+
+### Table 3 - ECFP + Shift-Aware (mean ± std, 3 seeds: 0, 1, 2)
+
+> emb_* heads use the ECFP MLP encoder trained with scaffold-OOD episodes.
+
+| Support | PN-M | PN-E | LogReg | kNN | PN-M | PN-E | LogReg | kNN | PN-M | PN-E | LogReg | kNN |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| | **Random Split** | | | | **Scaffold Split** | | | | **Size Split** | | | |
+| 16 | 0.115+-0.004 | **0.119+-0.003** | 0.095+-0.004 | 0.085+-0.003 | 0.109+-0.004 | **0.114+-0.004** | 0.089+-0.003 | 0.079+-0.004 | 0.100+-0.005 | **0.103+-0.005** | 0.079+-0.004 | 0.068+-0.004 |
+| 32 | 0.138+-0.005 | **0.138+-0.004** | 0.122+-0.007 | 0.099+-0.003 | 0.127+-0.005 | **0.130+-0.005** | 0.109+-0.010 | 0.090+-0.005 | 0.114+-0.005 | **0.116+-0.004** | 0.093+-0.006 | 0.078+-0.006 |
+| 64 | **0.158+-0.002** | 0.156+-0.003 | 0.149+-0.005 | 0.115+-0.004 | **0.151+-0.006** | 0.150+-0.007 | 0.134+-0.010 | 0.106+-0.004 | **0.128+-0.005** | 0.126+-0.006 | 0.109+-0.010 | 0.084+-0.007 |
+| 128 | **0.180+-0.003** | 0.177+-0.004 | 0.180+-0.007 | 0.134+-0.005 | **0.176+-0.006** | 0.173+-0.007 | 0.170+-0.005 | 0.128+-0.005 | 0.035+-0.015 | 0.036+-0.016 | **0.040+-0.007** | 0.018+-0.003 |
+| 256 | 0.093+-0.012 | 0.089+-0.013 | **0.117+-0.004** | 0.070+-0.002 | 0.085+-0.010 | 0.082+-0.011 | **0.102+-0.001** | 0.062+-0.006 | 0.053+-0.006 | 0.049+-0.007 | **0.061+-0.010** | 0.027+-0.006 |
+| 512 | 0.076+-0.008 | 0.069+-0.006 | **0.102+-0.007** | 0.050+-0.003 | 0.071+-0.013 | 0.066+-0.011 | **0.087+-0.011** | 0.038+-0.004 | 0.052+-0.003 | 0.044+-0.004 | **0.055+-0.007** | 0.023+-0.006 |
+
+---
+
+### Table 4 - GNN + Random (mean ± std, 3 seeds: 0, 1, 2)
+
+> emb_* heads use the FS-Mol GNN encoder trained with random episodes.
+
+| Support | PN-M | PN-E | LogReg | kNN | PN-M | PN-E | LogReg | kNN | PN-M | PN-E | LogReg | kNN |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| | **Random Split** | | | | **Scaffold Split** | | | | **Size Split** | | | |
+| 16 | 0.127+-0.012 | **0.135+-0.015** | 0.122+-0.014 | 0.084+-0.011 | 0.114+-0.013 | **0.124+-0.015** | 0.108+-0.013 | 0.075+-0.009 | 0.104+-0.012 | **0.114+-0.013** | 0.101+-0.013 | 0.062+-0.009 |
+| 32 | 0.151+-0.015 | **0.157+-0.019** | 0.137+-0.015 | 0.102+-0.013 | 0.138+-0.013 | **0.144+-0.017** | 0.124+-0.013 | 0.090+-0.012 | 0.119+-0.012 | **0.131+-0.017** | 0.105+-0.015 | 0.076+-0.010 |
+| 64 | 0.181+-0.014 | **0.182+-0.021** | 0.155+-0.012 | 0.124+-0.016 | 0.162+-0.016 | **0.163+-0.021** | 0.137+-0.013 | 0.106+-0.017 | 0.140+-0.017 | **0.147+-0.023** | 0.112+-0.015 | 0.087+-0.015 |
+| 128 | **0.221+-0.017** | 0.213+-0.021 | 0.189+-0.009 | 0.152+-0.017 | **0.200+-0.021** | 0.192+-0.023 | 0.168+-0.011 | 0.132+-0.020 | **0.067+-0.004** | 0.067+-0.004 | 0.051+-0.007 | 0.039+-0.002 |
+| 256 | **0.153+-0.006** | 0.133+-0.007 | 0.129+-0.004 | 0.114+-0.004 | **0.139+-0.008** | 0.121+-0.008 | 0.112+-0.004 | 0.098+-0.006 | **0.109+-0.007** | 0.098+-0.015 | 0.071+-0.009 | 0.062+-0.009 |
+| 512 | **0.164+-0.009** | 0.128+-0.014 | 0.138+-0.006 | 0.111+-0.002 | **0.158+-0.006** | 0.124+-0.010 | 0.127+-0.007 | 0.099+-0.001 | **0.132+-0.003** | 0.114+-0.009 | 0.088+-0.005 | 0.079+-0.006 |
+
+---
+
+### Table 5 - GNN + Shift-Aware (mean ± std, 3 seeds: 0, 1, 2)
+
+> emb_* heads use the FS-Mol GNN encoder trained with scaffold-OOD episodes. Key comparison vs Table 4: does shift-aware training improve scaffold ΔAUPRC?
+
+| Support | PN-M | PN-E | LogReg | kNN | PN-M | PN-E | LogReg | kNN | PN-M | PN-E | LogReg | kNN |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| | **Random Split** | | | | **Scaffold Split** | | | | **Size Split** | | | |
+| 16 | 0.128+-0.002 | **0.136+-0.003** | 0.125+-0.002 | 0.084+-0.001 | 0.116+-0.002 | **0.123+-0.003** | 0.108+-0.003 | 0.075+-0.002 | 0.102+-0.003 | **0.114+-0.003** | 0.098+-0.003 | 0.064+-0.001 |
+| 32 | 0.157+-0.003 | **0.165+-0.004** | 0.142+-0.004 | 0.108+-0.002 | 0.142+-0.001 | **0.150+-0.003** | 0.127+-0.001 | 0.095+-0.001 | 0.123+-0.002 | **0.132+-0.002** | 0.109+-0.003 | 0.078+-0.002 |
+| 64 | 0.189+-0.003 | **0.190+-0.003** | 0.159+-0.002 | 0.131+-0.002 | 0.173+-0.003 | **0.176+-0.004** | 0.143+-0.002 | 0.114+-0.002 | 0.147+-0.003 | **0.154+-0.001** | 0.118+-0.004 | 0.094+-0.003 |
+| 128 | **0.215+-0.002** | 0.207+-0.003 | 0.184+-0.004 | 0.155+-0.004 | **0.209+-0.003** | 0.202+-0.002 | 0.173+-0.004 | 0.145+-0.002 | 0.062+-0.001 | **0.063+-0.001** | 0.046+-0.005 | 0.036+-0.002 |
+| 256 | **0.153+-0.000** | 0.136+-0.001 | 0.128+-0.003 | 0.114+-0.002 | **0.138+-0.001** | 0.121+-0.002 | 0.111+-0.003 | 0.100+-0.001 | **0.096+-0.003** | 0.086+-0.007 | 0.056+-0.008 | 0.058+-0.002 |
+| 512 | **0.148+-0.003** | 0.119+-0.007 | 0.127+-0.004 | 0.106+-0.002 | **0.150+-0.003** | 0.123+-0.004 | 0.111+-0.007 | 0.094+-0.005 | **0.126+-0.004** | 0.111+-0.004 | 0.082+-0.011 | 0.068+-0.005 |
+
+---
+
 ### Scaffold OOD: Intervention Results
 
 Three independent interventions were tested to address the scaffold ΔAUPRC gap. All produced null results (GNN encoder, n=128 support):
@@ -205,11 +326,11 @@ Three independent interventions were tested to address the scaffold ΔAUPRC gap.
 
 **Ratio annealing**: starts with 100% random episodes, linearly increases scaffold-split fraction to 60% during training. Per-epoch annealing via `shift_aware_ratio` attribute on the dataset. Code: [train.py](train.py) `pretrain_classification_anneal`, `TRAINING_SPLIT = "anneal"` in [main.py](main.py).
 
-**Conclusion**: The scaffold ΔAUPRC ceiling (~0.050) is structural - intrinsic to the mean-prototype inference mechanism. Neither test-time adaptation nor training curriculum changes can overcome it. The failure mode is that support molecules (same scaffold family) produce a prototype in the wrong region of embedding space relative to OOD query scaffolds, and this cannot be corrected by reweighting or by changing the training distribution.
+**Conclusion (SUPERSEDED)**: ~~The scaffold ΔAUPRC ceiling (~0.050) is structural.~~ The ~0.050 ceiling was an **evaluation artifact** from a broken scaffold split construction - see the corrected eval in `baseline_grid_gnn_seed0.csv` (GNN+Random seed 0 scaffold PN-M = 0.211 at n=128). Intervention conclusions pending corrected re-evaluation. Neither test-time adaptation nor training curriculum changes can overcome it. The failure mode is that support molecules (same scaffold family) produce a prototype in the wrong region of embedding space relative to OOD query scaffolds, and this cannot be corrected by reweighting or by changing the training distribution.
 
 **Figure** (run `python Analysis/model/plot_interventions.py` to regenerate):
 
-![Intervention comparison](outputs/figures/data_analysis/fig_interventions.png)
+<!-- ![Intervention comparison](outputs/figures/data_analysis/fig_interventions.png) -->
 
 ---
 
@@ -280,8 +401,11 @@ ENV = "local"    # "server" for HPC/server runs
 # Full pipeline (train + evaluate) - configure MODEL_HEAD/ENCODER/TRAINING_SPLIT in main.py first
 python main.py
 
-# Generate figures from saved CSVs
-python Analysis/model/plot_results.py --run_tag fsmol_gnn_classification_shift_aware
+# Line plot: mean ± std ΔAUPRC vs support size (edit CONFIG block in script)
+python Analysis/model/plot_line_grid.py
+
+# Boxplot: per-assay ΔAUPRC distribution vs support size (same CONFIG pattern)
+python Analysis/model/plot_boxplot_grid.py
 
 # Data analysis (no model needed)
 python Analysis/data/dataset_overview.py

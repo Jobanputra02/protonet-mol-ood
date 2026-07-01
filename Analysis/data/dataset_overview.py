@@ -1,6 +1,9 @@
 ﻿"""
 Dataset Overview - FS-Mol & DrugOOD
 =====================================
+ONE QUESTION: what do the datasets look like and how much survives filtering?
+(assay sizes, fraction-active, data loss at each filtering step, DrugOOD domain sizes)
+
 Single-pass scan of all assay files produces a unified stats table that drives:
 
   Data loss report:
@@ -46,12 +49,15 @@ RESULTS_DIR = DATA_ANALYSIS_RESULTS_DIR
 os.makedirs(FIGURES_DIR, exist_ok=True)
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
-MIN_TASK_SIZE = 32
-DRUGOOD_FILES = {
+# ===== CONFIG - edit these, then run (no arguments) =====
+MIN_TASK_SIZE  = 32     # assays with fewer exact molecules are flagged as filtered
+SPLITS_TO_SCAN = ("train", "valid", "test")   # drop "train" for a fast run (~10-20 min saved)
+DRUGOOD_FILES  = {      # which DrugOOD shift files to summarise
     "scaffold": "lbap_core_ic50_scaffold.json",
     "size":     "lbap_core_ic50_size.json",
     "assay":    "lbap_core_ic50_assay.json",
 }
+# ========================================================
 
 
 # =============================================================================
@@ -392,7 +398,7 @@ def plot_size_vs_fraction_exact(df: pd.DataFrame) -> None:
 if __name__ == "__main__":
     # ── Scan FS-Mol splits ────────────────────────────────────────────────────
     all_dfs = []
-    for split in ("train", "valid", "test"):
+    for split in SPLITS_TO_SCAN:
         split_dir = os.path.join(FSMOL_DIR, split)
         print(f"\nScanning {split}/  (train takes ~10-20 min)...")
         df = scan_fsmol_split(split_dir, split)

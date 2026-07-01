@@ -442,16 +442,27 @@ class PrototypicalNetworkClassification(nn.Module):
         return p_active, valid_mask
 
     def predict_from_embeddings(
-        self, sup_emb: torch.Tensor, sup_labels: torch.Tensor, qry_emb: torch.Tensor
+        self, sup_emb: torch.Tensor, sup_labels: torch.Tensor, qry_emb: torch.Tensor,
+        distance: str = "mahalanobis",
     ) -> torch.Tensor:
-        """Predict given pre-computed embeddings - avoids re-encoding support each query chunk."""
+        """Predict given pre-computed embeddings - avoids re-encoding support each query chunk.
+
+        distance="mahalanobis" (default, FS-Mol eval protocol) or "euclidean"
+        (the distance the model is actually trained with - use to report the
+        train/eval-consistent number alongside the Mahalanobis one).
+        """
         active_mask = sup_labels > 0.5   # sup_labels must be binary (0/1)
         if not active_mask.any() or not (~active_mask).any():
             return torch.full((qry_emb.shape[0],), 0.5, device=qry_emb.device)
         proto_active   = sup_emb[active_mask].mean(dim=0)
         proto_inactive = sup_emb[~active_mask].mean(dim=0)
         protos   = torch.stack([proto_active, proto_inactive], dim=0)
-        dists    = _mahalanobis_dists(qry_emb, protos, sup_emb, active_mask)
+        if distance == "euclidean":
+            d_active   = ((qry_emb - proto_active.unsqueeze(0)) ** 2).sum(dim=-1)
+            d_inactive = ((qry_emb - proto_inactive.unsqueeze(0)) ** 2).sum(dim=-1)
+            dists = torch.stack([d_active, d_inactive], dim=-1)
+        else:
+            dists = _mahalanobis_dists(qry_emb, protos, sup_emb, active_mask)
         return F.softmax(-dists, dim=1)[:, 0]
 
     # ------------------------------------------------------------------
