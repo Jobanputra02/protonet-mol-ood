@@ -17,7 +17,7 @@ Output: outputs/figures/{run_tag}/lineplot_{heads_tag}__{splits_tag}.png
 
 Usage
 -----
-    python Analysis/model/plot_baseline_grid.py
+    python Analysis/model/plot_line_grid.py
 Edit CONFIG block below to change what is plotted.
 """
 
