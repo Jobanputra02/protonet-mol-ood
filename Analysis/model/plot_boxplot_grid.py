@@ -61,13 +61,13 @@ EVAL_SPLITS = [
 SUPPORT_SIZES = [16, 32, 64, 128, 256, 512]
 
 HEAD_COLOR = {
-    "emb_proto_mahalanobis": "#1f77b4",
-    "emb_proto_euclid":      "#17becf",
-    "emb_logreg":            "#2ca02c",
-    "emb_knn":               "#8c564b",
-    "ecfp_rf":               "#d62728",
-    "ecfp_logreg":           "#ff7f0e",
-    "ecfp_proto_euclid":     "#9467bd",
+    "emb_proto_mahalanobis": "#2a78d6",  # blue
+    "emb_proto_euclid":      "#1baf7a",  # aqua
+    "emb_logreg":            "#008300",  # green
+    "emb_knn":               "#eda100",  # amber
+    "ecfp_rf":               "#e34948",  # red
+    "ecfp_logreg":           "#eb6834",  # orange
+    "ecfp_proto_euclid":     "#4a3aa7",  # violet
 }
 HEAD_LABEL = {
     "emb_proto_mahalanobis": "PN-M (emb)",

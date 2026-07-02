@@ -37,7 +37,7 @@ from config import RESULTS_DIR, FIGURES_DIR
 # CONFIG - edit these, then run
 # =============================================================================
 ENCODER        = "fsmol_gnn"        # "ecfp" | "fsmol_gnn"
-TRAINING_SPLIT = "random"           # "random" | "shift_aware"
+TRAINING_SPLIT = "shift_aware"           # "random" | "shift_aware"
 SEEDS          = [0, 1, 2]
 
 # Pick any subset of the 7 available heads:
@@ -61,19 +61,28 @@ EVAL_SPLITS = [
     "scaffold",
     "size"
     ]
+
+# Error bar mode:
+#   "assays" - std across assays (standard for few-shot benchmarks; answers "how consistent across tasks?")
+#   "seeds"  - std across seeds  (reproducibility check; answers "is the result stable?")
+#   None     - no error bars (clean lines only)
+ERROR_BARS = "assays"
 # =============================================================================
+
+# if ERROR_BARS == "None":  # allow writing ERROR_BARS = "None" as well as None
+#     ERROR_BARS = None
 
 SUPPORT_SIZES = [16, 32, 64, 128, 256, 512]
 
 # ── Style maps ────────────────────────────────────────────────────────────────
 HEAD_COLOR = {
-    "emb_proto_mahalanobis": "#1f77b4",  # blue
-    "emb_proto_euclid":      "#17becf",  # teal
-    "emb_logreg":            "#2ca02c",  # green
-    "emb_knn":               "#8c564b",  # brown
-    "ecfp_rf":               "#d62728",  # red
-    "ecfp_logreg":           "#ff7f0e",  # orange
-    "ecfp_proto_euclid":     "#9467bd",  # purple
+    "emb_proto_mahalanobis": "#2a78d6",  # blue
+    "emb_proto_euclid":      "#1baf7a",  # aqua
+    "emb_logreg":            "#008300",  # green
+    "emb_knn":               "#eda100",  # amber
+    "ecfp_rf":               "#e34948",  # red
+    "ecfp_logreg":           "#eb6834",  # orange
+    "ecfp_proto_euclid":     "#4a3aa7",  # violet
 }
 HEAD_MARKER = {
     "emb_proto_mahalanobis": "o",
@@ -122,28 +131,36 @@ if not dfs:
 combined = pd.concat(dfs, ignore_index=True)
 print(f"Loaded {len(dfs)} seed(s) for {run_tag}")
 
-# ── Compute mean +/- std across seeds ────────────────────────────────────────
+# ── Compute mean +/- std ─────────────────────────────────────────────────────
 records = []
 for head in HEADS:
     for split in EVAL_SPLITS:
         for sz in SUPPORT_SIZES:
-            per_seed = []
-            for seed in SEEDS:
-                sub = combined[
-                    (combined["seed"] == seed) &
-                    (combined["head"] == head) &
-                    (combined["split_type"] == split) &
-                    (combined["support_size"] == sz)
+            sub = combined[
+                (combined["head"] == head) &
+                (combined["split_type"] == split) &
+                (combined["support_size"] == sz)
+            ]
+            if sub.empty:
+                continue
+
+            if ERROR_BARS == "assays":
+                # Average seeds per assay first, then std across assays
+                per_assay = sub.groupby("assay_id")["delta_auprc"].mean()
+                mean_val = per_assay.mean()
+                std_val  = per_assay.std(ddof=1) if len(per_assay) > 1 else 0.0
+            else:  # "seeds"
+                per_seed = [
+                    sub[sub["seed"] == s]["delta_auprc"].mean()
+                    for s in SEEDS if not sub[sub["seed"] == s].empty
                 ]
-                if not sub.empty:
-                    per_seed.append(sub["delta_auprc"].mean())
-            if per_seed:
-                records.append({
-                    "head": head, "split": split, "support_size": sz,
-                    "mean":    np.mean(per_seed),
-                    "std":     np.std(per_seed, ddof=1) if len(per_seed) > 1 else 0.0,
-                    "n_seeds": len(per_seed),
-                })
+                mean_val = np.mean(per_seed)
+                std_val  = np.std(per_seed, ddof=1) if len(per_seed) > 1 else 0.0
+
+            records.append({
+                "head": head, "split": split, "support_size": sz,
+                "mean": mean_val, "std": std_val,
+            })
 
 stats = pd.DataFrame(records)
 if stats.empty:
@@ -164,13 +181,13 @@ for head in HEADS:
         ye = sub["std"].values
         ax.errorbar(
             x, y,
-            yerr=ye,
+            yerr=ye if ERROR_BARS is not None else None,
             color=color,
             linestyle=SPLIT_LSTYLE[split],
             marker=marker,
             markersize=5,
             linewidth=1.8,
-            capsize=3,
+            capsize=3 if ERROR_BARS is not None else 0,
             elinewidth=1.0,
         )
 
@@ -192,23 +209,38 @@ split_handles = [
 leg1 = ax.legend(handles=head_handles, title="Head", loc="upper left",
                   fontsize=8, title_fontsize=8, framealpha=0.9)
 ax.add_artist(leg1)
-ax.legend(handles=split_handles, title="Eval split", loc="lower right",
+ax.legend(handles=split_handles, title="Eval split", loc="upper right",
           fontsize=8, title_fontsize=8, framealpha=0.9)
 
 # ── Labels & formatting ───────────────────────────────────────────────────────
 encoder_label = "GNN" if "gnn" in ENCODER else "ECFP"
 split_label   = TRAINING_SPLIT.replace("_", "-")
-seed_str      = f"seeds {SEEDS}" if len(SEEDS) > 1 else f"seed {SEEDS[0]}"
+eb_note = (
+    "error bars = ±1 std across assays" if ERROR_BARS == "assays" else
+    "error bars = ±1 std across seeds"  if ERROR_BARS == "seeds"  else
+    None
+)
 
 ax.set_title(
-    f"FS-Mol Test: Mean ΔAUPRC - {encoder_label} + {split_label}  ({seed_str})",
+    f"FS-Mol Test: Mean ΔAUPRC - {encoder_label} + {split_label}",
     fontsize=11,
 )
 ax.set_xlabel("Support size (n)", fontsize=11)
 ax.set_ylabel("Mean ΔAUPRC", fontsize=11)
+# # N = number of unique assays qualifying at each support size (use first split as reference)
+# ref_split = EVAL_SPLITS[0]
+# n_assays = {
+#     sz: combined[(combined["split_type"] == ref_split) & (combined["support_size"] == sz)]["assay_id"].nunique()
+#     for sz in SUPPORT_SIZES
+# }
 ax.set_xticks(SUPPORT_SIZES)
+# ax.set_xticklabels([f"{sz} (N={n_assays[sz]})" for sz in SUPPORT_SIZES], rotation=45, ha="center")
 ax.set_xticklabels([str(s) for s in SUPPORT_SIZES])
 ax.grid(True, alpha=0.3)
+if eb_note:
+    ax.annotate(eb_note, xy=(1, 0), xycoords="axes fraction",
+                fontsize=7, color="gray", ha="right", va="bottom",
+                xytext=(0, -36), textcoords="offset points")
 plt.tight_layout()
 
 # ── Save ──────────────────────────────────────────────────────────────────────

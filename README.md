@@ -253,7 +253,7 @@ Key takeaways: RF consistently beats LogReg beats raw PN-E. Scaffold split costs
 - **Encoder matters more than head on scaffold split**: GNN PN-M reaches 0.200–0.209 at n=128 scaffold split (corrected eval, Tables 4–5); RF (0.145 at n=128) is competitive only at large n where few assays qualify. See Tables 2–5 for full head-by-head breakdown.
 - **GNN DrugOOD assay OOD is clearly better than ECFP**: GNN shift-aware 0.043 ± 0.003 vs ECFP shift-aware 0.015 ± 0.007 - roughly 3× gain. Structural features transfer better across assay boundaries than fingerprints.
 - **Low variance across seeds**: std ≤ 0.005 for all models on random split. Results are reproducible.
-- **n=256/512 drop is partially assay selection bias**: At n=256 only 29 qualifying assays remain (vs 154 at n=16). These large assays are harder - the drop reflects both a harder subset and (for ECFP) a genuine representation limit.
+- **n=256/512 drop is assay selection bias, not model failure**: At n=256 only 29 qualifying assays remain (vs 154 at n=16). Fixed-assay-set analysis (`fixed_assay_curves.py`) shows all models improve monotonically on the same 11 assays across all support sizes — the naive curve drop is entirely due to a harder assay subset entering the population.
 
 For full per-assay distributions, per-context-size DrugOOD curves, and baseline comparisons, see [Analysis/model/README.md](Analysis/model/README.md). 
 

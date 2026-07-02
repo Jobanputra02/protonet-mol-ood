@@ -1,6 +1,6 @@
 # Data Analysis
 
-Scripts that audit the FS-Mol and DrugOOD datasets **before and independently of any model** — they need only the datasets and `config.py`. Each script answers exactly one question (stated at the top of the file). Outputs go to `DATA_ANALYSIS_FIGURES_DIR` / `DATA_ANALYSIS_RESULTS_DIR`.
+Scripts that audit the FS-Mol and DrugOOD datasets **before and independently of any model** - they need only the datasets and `config.py`. Each script answers exactly one question (stated at the top of the file). Outputs go to `DATA_ANALYSIS_FIGURES_DIR` / `DATA_ANALYSIS_RESULTS_DIR`.
 
 | Script | One question it answers |
 |---|---|
@@ -10,7 +10,7 @@ Scripts that audit the FS-Mol and DrugOOD datasets **before and independently of
 | `chemical_space.py` | How chemically different are FS-Mol and DrugOOD? (properties, Tanimoto distance, t-SNE) |
 | `shift_aware_episodes.py` | How many shift-aware *training* episodes actually carry usable signal? |
 
-Each script is self-contained (per-molecule RDKit feature helpers are inlined where used — no shared library file) and has a `# CONFIG` block near the top — edit the variables, run with **no arguments** (same mechanism as `main.py`). Figures are written directly by these scripts.
+Each script is self-contained (per-molecule RDKit feature helpers are inlined where used - no shared library file) and has a `# CONFIG` block near the top - edit the variables, run with **no arguments** (same mechanism as `main.py`). Figures are written directly by these scripts.
 
 ```bash
 python Analysis/data/dataset_overview.py     # CONFIG: SPLITS_TO_SCAN (drop "train" for a fast run)
@@ -24,7 +24,7 @@ python Analysis/data/shift_aware_episodes.py # CONFIG: N_EPISODES / N_SUPPORT
 
 ## Key dataset facts
 
-### FS-Mol — data loss after filtering (`Relation == "="`, then drop tasks < 32 molecules)
+### FS-Mol - data loss after filtering (`Relation == "="`, then drop tasks < 32 molecules)
 
 | Split | Raw molecules | Inexact dropped | Bad/missing | Task-too-small | **Used** | Tasks kept |
 |---|---|---|---|---|---|---|
@@ -32,7 +32,7 @@ python Analysis/data/shift_aware_episodes.py # CONFIG: N_EPISODES / N_SUPPORT
 | Valid | 19,008 | 2,266 (11.9%) | 83 (0.4%) | 36 (0.2%) | **16,623 (87.5%)** | 38 / 40 (95%) |
 | Test | 56,220 | 12,429 (22.1%) | 129 (0.2%) | 0 (0.0%) | **43,662 (77.7%)** | 154 / 157 (98%) |
 
-### FS-Mol — assay size (after filtering)
+### FS-Mol - assay size (after filtering)
 
 | Split | Tasks | Mean | Median | Min | Max |
 |---|---|---|---|---|---|
@@ -40,9 +40,9 @@ python Analysis/data/shift_aware_episodes.py # CONFIG: N_EPISODES / N_SUPPORT
 | Valid | 38 | 437 | 157 | 109 | 4,697 |
 | Test | 154 | 284 | 157 | 63 | 3,594 |
 
-Test/valid assays are ~3.5× larger than train. **Only very large assays qualify at support sizes 256/512**, so the support-size sweep at n=256/512 is computed on a different (smaller, harder) assay population — a selection effect, not a model effect. The `fixed_assay_curves.py` helper in `../model/` controls for this.
+Test/valid assays are ~3.5× larger than train. **Only very large assays qualify at support sizes 256/512**, so the support-size sweep at n=256/512 is computed on a different (smaller, harder) assay population - a selection effect, not a model effect. The `fixed_assay_curves.py` helper in `../model/` controls for this.
 
-### DrugOOD — label balance (verified, `lbap_core_ic50_scaffold`)
+### DrugOOD - label balance (verified, `lbap_core_ic50_scaffold`)
 
 | Split | active | inactive | % active |
 |---|---|---|---|
@@ -50,11 +50,11 @@ Test/valid assays are ~3.5× larger than train. **Only very large assays qualify
 | ood_test | 15,144 | 4,336 | 78% |
 | iid_test | 28,226 | 3,162 | 90% |
 
-DrugOOD uses a single global pIC50 threshold, so the context pool is heavily active-skewed. Uniform context sampling therefore builds the inactive prototype from ~0–1 molecules at small context sizes, and the ΔAUPRC ceiling on `ood_test` is only `1 − 0.78 = 0.22`. The evaluation now **stratifies** the context sample (`data.stratified_context_indices`) so both classes are represented. Note this differs from FS-Mol training, where `Property` is balanced ~50/50 per assay (verified: 29/29 on a sample assay) — "active" means different things in train vs eval.
+DrugOOD uses a single global pIC50 threshold, so the context pool is heavily active-skewed. Uniform context sampling therefore builds the inactive prototype from ~0-1 molecules at small context sizes, and the ΔAUPRC ceiling on `ood_test` is only `1 - 0.78 = 0.22`. The evaluation now **stratifies** the context sample (`data.stratified_context_indices`) so both classes are represented. Note this differs from FS-Mol training, where `Property` is balanced ~50/50 per assay (verified: 29/29 on a sample assay) - "active" means different things in train vs eval.
 
-### Scaffold–activity degeneracy (Cramér's V, `scaffold_activity.py`)
+### Scaffold-activity degeneracy (Cramér's V, `scaffold_activity.py`)
 
-On 2000 sampled FS-Mol training assays: mean V = 0.68, median 0.72; V > 0.30 in 91% of assays. Scaffold membership strongly predicts the binary label in almost all assays. **Implication for evaluation:** a scaffold split shifts the *label* distribution, not just the structure — so a fair scaffold split must keep both classes present in the support set (see `data.build_fair_split_indices`).
+On 2000 sampled FS-Mol training assays: mean V = 0.68, median 0.72; V > 0.30 in 91% of assays. Scaffold membership strongly predicts the binary label in almost all assays. **Implication for evaluation:** a scaffold split shifts the *label* distribution, not just the structure - so a fair scaffold split must keep both classes present in the support set (see `data.build_fair_split_indices`).
 
 ---
 

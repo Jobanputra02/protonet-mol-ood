@@ -62,7 +62,7 @@ def fixed_set_summary(df: pd.DataFrame, value="delta_auprc",
 
 if __name__ == "__main__":
     # ===== CONFIG - edit these, then run (no arguments) =====
-    CSV         = "outputs/results/fsmol_gnn_classification_random_seed0/baseline_grid.csv"
+    CSV         = r"D:\Thesis\PTN\outputs\results\fsmol_gnn_classification_random_seed0\baseline_grid.csv"
     VALUE       = "delta_auprc"   # column to summarise
     EXTRA_GROUP = "head"          # extra column to split curves by (e.g. "head"); None for none
     OUT         = None            # path to save the summary CSV, or None to only print
