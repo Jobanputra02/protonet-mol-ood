@@ -1,0 +1,49 @@
+Running on node: serv-3343
+GPUs available: 1
+------------------------------
+
+Reading /netscratch/jobanputra/PTN/data/fsmol/train ...
+
+============================================================
+TRAIN  (26868 assays)
+  mol counts:  median=43  mean=187.5  min=2  max=102223
+
+  n_support    need (2n)    qualifying     %
+  --------------------------------------------------
+  16           32           24009          89.4%
+  32           64           6989           26.0%
+  64           128          3168           11.8%
+  128          256          1530           5.7%
+  256          512          587            2.2%
+  512          1024         325            1.2%
+
+Reading /netscratch/jobanputra/PTN/data/fsmol/valid ...
+
+============================================================
+VALID  (40 assays)
+  mol counts:  median=157  mean=475.2  min=138  max=4697
+
+  n_support    need (2n)    qualifying     %
+  --------------------------------------------------
+  16           32           40             100.0%
+  32           64           40             100.0%
+  64           128          40             100.0%
+  128          256          11             27.5%
+  256          512          7              17.5%
+  512          1024         5              12.5%
+
+Reading /netscratch/jobanputra/PTN/data/fsmol/test ...
+
+============================================================
+TEST  (157 assays)
+  mol counts:  median=157  mean=358.1  min=130  max=3594
+
+  n_support    need (2n)    qualifying     %
+  --------------------------------------------------
+  16           32           157            100.0%
+  32           64           157            100.0%
+  64           128          157            100.0%
+  128          256          43             27.4%
+  256          512          27             17.2%
+  512          1024         7              4.5%
+

@@ -1,16 +1,7 @@
 ﻿"""
-Molecular Featurization: SMILES → PyTorch Geometric Data
-=========================================================
-Two featurization schemes:
-
-ORIGINAL (PNAGNNEncoder):
-  Atom features  (NODE_FEAT_DIM = 51):
-    Atom type 15, Degree 12, Formal charge 6, Total Hs 10, Hybridisation 6,
-    Aromatic 1, In ring 1
-  Bond features  (EDGE_FEAT_DIM = 12):
-    Bond type 4, Conjugated 1, In ring 1, Stereo 6
-
-FS-MOL FAITHFUL (FSMolGNNEncoder):
+Molecular Featurization: SMILES → PyTorch Geometric Data (FSMolGNNEncoder)
+==========================================================================
+FS-Mol-faithful featurization:
   Atom features  (FSMOL_NODE_FEAT_DIM = 40):
     Atom type 19 (18 drug-like types + UNK), Degree 1, Charge 1,
     Radical electrons 1, Isotope 1, Mass 1, Valence 1, Num Hs 1,
@@ -39,150 +30,6 @@ try:
 except ImportError:
     _PYGEOM_AVAILABLE = False
     Data = None  # type: ignore
-
-
-# =============================================================================
-# ORIGINAL FEATURIZATION  (PNAGNNEncoder - keep unchanged)
-# =============================================================================
-
-_ATOM_TYPE_LIST   = [1, 5, 6, 7, 8, 9, 14, 15, 16, 17, 33, 34, 35, 53]   # H B C N O F Si P S Cl As Se Br I
-_DEGREE_LIST      = list(range(11))                                          # 0-10
-_FORMAL_CHG_LIST  = [-2, -1, 0, 1, 2]
-_TOTAL_HS_LIST    = list(range(9))                                           # 0-8
-_HYBRID_LIST      = [
-    rdchem.HybridizationType.SP,
-    rdchem.HybridizationType.SP2,
-    rdchem.HybridizationType.SP3,
-    rdchem.HybridizationType.SP3D,
-    rdchem.HybridizationType.SP3D2,
-]
-
-NODE_FEAT_DIM: int = (
-    (len(_ATOM_TYPE_LIST) + 1)   # +1 for "other"
-    + (len(_DEGREE_LIST) + 1)
-    + (len(_FORMAL_CHG_LIST) + 1)
-    + (len(_TOTAL_HS_LIST) + 1)
-    + (len(_HYBRID_LIST) + 1)
-    + 1   # is_aromatic
-    + 1   # is_in_ring
-)  # = 51
-
-_BOND_STEREO_LIST = [
-    rdchem.BondStereo.STEREONONE,
-    rdchem.BondStereo.STEREOANY,
-    rdchem.BondStereo.STEREOE,
-    rdchem.BondStereo.STEREOZ,
-    rdchem.BondStereo.STEREOCIS,
-    rdchem.BondStereo.STEREOTRANS,
-]
-
-EDGE_FEAT_DIM: int = 4 + 1 + 1 + len(_BOND_STEREO_LIST)   # = 12
-
-
-def _one_hot(value, choices: list, allow_other: bool = True) -> list[float]:
-    enc = [0.0] * (len(choices) + int(allow_other))
-    try:
-        enc[choices.index(value)] = 1.0
-    except ValueError:
-        if allow_other:
-            enc[-1] = 1.0
-    return enc
-
-
-def atom_features(atom) -> np.ndarray:
-    feats: list[float] = []
-    feats += _one_hot(atom.GetAtomicNum(),     _ATOM_TYPE_LIST,  allow_other=True)
-    feats += _one_hot(atom.GetDegree(),        _DEGREE_LIST,     allow_other=True)
-    feats += _one_hot(atom.GetFormalCharge(),  _FORMAL_CHG_LIST, allow_other=True)
-    feats += _one_hot(atom.GetTotalNumHs(),    _TOTAL_HS_LIST,   allow_other=True)
-    feats += _one_hot(atom.GetHybridization(), _HYBRID_LIST,     allow_other=True)
-    feats.append(float(atom.GetIsAromatic()))
-    feats.append(float(atom.IsInRing()))
-    return np.array(feats, dtype=np.float32)
-
-
-_BOND_TYPE_MAP = {
-    rdchem.BondType.SINGLE:    [1.0, 0.0, 0.0, 0.0],
-    rdchem.BondType.DOUBLE:    [0.0, 1.0, 0.0, 0.0],
-    rdchem.BondType.TRIPLE:    [0.0, 0.0, 1.0, 0.0],
-    rdchem.BondType.AROMATIC:  [0.0, 0.0, 0.0, 1.0],
-}
-
-def bond_features(bond) -> np.ndarray:
-    feats: list[float] = []
-    feats += _BOND_TYPE_MAP.get(bond.GetBondType(), [0.0, 0.0, 0.0, 0.0])
-    feats.append(float(bond.GetIsConjugated()))
-    feats.append(float(bond.IsInRing()))
-    feats += _one_hot(bond.GetStereo(), _BOND_STEREO_LIST, allow_other=False)
-    return np.array(feats, dtype=np.float32)
-
-
-def smiles_to_graph(smiles: str) -> Optional["Data"]:
-    """SMILES → PyG Data with original 51-dim node / 12-dim edge features."""
-    if not _PYGEOM_AVAILABLE:
-        raise ImportError("torch_geometric is required for GNN encoder.")
-
-    import torch
-    from torch_geometric.data import Data as PyGData
-
-    mol = Chem.MolFromSmiles(smiles)   # type: ignore[attr-defined]
-    if mol is None:
-        return None
-
-    atom_feats = [atom_features(atom) for atom in mol.GetAtoms()]
-    if not atom_feats:
-        return None
-    x = torch.tensor(np.stack(atom_feats), dtype=torch.float)
-
-    rows, cols, edge_feats = [], [], []
-    for bond in mol.GetBonds():
-        i, j = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-        feat = bond_features(bond)
-        rows += [i, j]; cols += [j, i]; edge_feats += [feat, feat]
-
-    if edge_feats:
-        edge_index = torch.tensor([rows, cols], dtype=torch.long)
-        edge_attr  = torch.tensor(np.stack(edge_feats), dtype=torch.float)
-    else:
-        edge_index = torch.zeros((2, 0), dtype=torch.long)
-        edge_attr  = torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float)
-
-    return PyGData(x=x, edge_index=edge_index, edge_attr=edge_attr)
-
-
-def compute_degree_histogram(assay_files: list[str], n_sample: int = 500,
-                              max_degree: int = 10) -> "torch.Tensor":
-    """Degree histogram for PNAGNNEncoder (original featurization)."""
-    import torch
-    import gzip, json, random
-    from torch_geometric.utils import degree as pyg_degree
-
-    deg = torch.zeros(max_degree + 1, dtype=torch.long)
-    files = random.sample(assay_files, min(n_sample, len(assay_files)))
-
-    n_mols = 0
-    for fpath in files:
-        with gzip.open(fpath, "rt", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                mol_json = json.loads(line)
-                if mol_json.get("Relation", "=") != "=":
-                    continue
-                smi = mol_json.get("SMILES", None)
-                if smi is None:
-                    continue
-                data = smiles_to_graph(smi)
-                if data is None or data.edge_index.shape[1] == 0:
-                    continue
-                d = pyg_degree(data.edge_index[1], num_nodes=data.num_nodes, dtype=torch.long)
-                d_clamped = d.clamp(max=max_degree)
-                deg += torch.bincount(d_clamped, minlength=max_degree + 1)
-                n_mols += 1
-
-    print(f"  Degree histogram computed over {n_mols} molecules ({len(files)} assays).")
-    return deg
 
 
 # =============================================================================
@@ -306,7 +153,7 @@ def smiles_to_fsmol_graph(smiles: str) -> Optional["Data"]:
     """
     Convert SMILES to PyG Data with FS-Mol-faithful features.
 
-    Key differences from smiles_to_graph():
+    Key features:
       - Stereochemistry removed (FS-Mol drops it)
       - Kekulization: aromatic bonds → alternating SINGLE/DOUBLE
       - 40-dim node features (see FSMOL_NODE_FEAT_DIM)

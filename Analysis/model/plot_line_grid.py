@@ -1,4 +1,4 @@
-"""
+﻿"""
 Configurable baseline-grid line plot
 =====================================
 ONE FIGURE per model run. Each line = (head, eval_split) combination.
@@ -6,14 +6,14 @@ ONE FIGURE per model run. Each line = (head, eval_split) combination.
 - Linestyle encodes eval split (solid/dashed/dotted)
 - Error bars = +/- 1 std across seeds
 
-Covers all 7 heads:
+Covers all 9 heads:
   emb_*  : emb_proto_mahalanobis, emb_proto_euclid, emb_logreg, emb_knn
-  ecfp_* : ecfp_rf, ecfp_logreg, ecfp_proto_euclid
+  ecfp_* : ecfp_rf, ecfp_logreg, ecfp_proto_euclid, ecfp_proto_tanimoto, ecfp_gp_tanimoto
 
 To reproduce fig_ecfp_baseline_curves.png: set HEADS = ECFP_HEADS, EVAL_SPLITS = all 3.
 To reproduce fig2a-style single-head plot:  set HEADS = ["emb_proto_mahalanobis"], EVAL_SPLITS = all 3.
 
-Output: outputs/figures/{run_tag}/lineplot_{heads_tag}__{splits_tag}.png
+Output: outputs/{run_tag}/figures/lineplot_{heads_tag}__{splits_tag}.png
 
 Usage
 -----
@@ -31,24 +31,30 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from config import RESULTS_DIR, FIGURES_DIR
+from config import run_csv_dir, run_fig_dir, BASELINE_CSV_DIR
 
 # =============================================================================
 # CONFIG - edit these, then run
 # =============================================================================
-ENCODER        = "fsmol_gnn"        # "ecfp" | "fsmol_gnn"
-TRAINING_SPLIT = "shift_aware"           # "random" | "shift_aware"
+ENCODER        = "gnn"              # "ecfp" | "gnn"
+TRAINING_SPLIT = "random"           # "random" | "scaffold" | "similarity"
+TRAIN_DISTANCE = "euclidean"        # "euclidean" | "mahalanobis"
+N_SUPPORT      = 64                 # int or list[int] used during training, e.g. [16, 32, 64]
 SEEDS          = [0, 1, 2]
+
+# Eval split is Butina@0.70 — fixed design choice (config.SCAFFOLD_OOD_CUTOFF).
 
 # Pick any subset of the 7 available heads:
 ECFP_HEADS = [
     # "ecfp_rf",
     # "ecfp_logreg",
-    # "ecfp_proto_euclid"
+    # "ecfp_proto_euclid",
+    # "ecfp_proto_tanimoto",
+    "ecfp_gp_tanimoto",
     ]
 EMB_HEADS  = [
     "emb_proto_mahalanobis",
-    # "emb_proto_euclid",
+    "emb_proto_euclid",
     # "emb_logreg",
     # "emb_knn"
     ]
@@ -58,8 +64,9 @@ HEADS = ECFP_HEADS + EMB_HEADS          # change to ECFP_HEADS, EMB_HEADS, or EC
 # Pick any subset of: "random", "scaffold", "size"
 EVAL_SPLITS = [
     "random",
-    "scaffold",
-    "size"
+    # "scaffold",
+    # "similarity",
+    # "size",
     ]
 
 # Error bar mode:
@@ -83,6 +90,8 @@ HEAD_COLOR = {
     "ecfp_rf":               "#e34948",  # red
     "ecfp_logreg":           "#eb6834",  # orange
     "ecfp_proto_euclid":     "#4a3aa7",  # violet
+    "ecfp_proto_tanimoto":   "#c2185b",  # deep pink
+    "ecfp_gp_tanimoto":      "#00838f",  # teal
 }
 HEAD_MARKER = {
     "emb_proto_mahalanobis": "o",
@@ -92,6 +101,8 @@ HEAD_MARKER = {
     "ecfp_rf":               "o",
     "ecfp_logreg":           "s",
     "ecfp_proto_euclid":     "^",
+    "ecfp_proto_tanimoto":   "v",
+    "ecfp_gp_tanimoto":      "P",
 }
 HEAD_LABEL = {
     "emb_proto_mahalanobis": "PN-M (emb)",
@@ -101,35 +112,56 @@ HEAD_LABEL = {
     "ecfp_rf":               "RF (ecfp)",
     "ecfp_logreg":           "LogReg (ecfp)",
     "ecfp_proto_euclid":     "PN-E (ecfp)",
+    "ecfp_proto_tanimoto":   "PN-T (ecfp)",
+    "ecfp_gp_tanimoto":      "GP-T (ecfp)",
 }
-SPLIT_LSTYLE = {"random": "-", "scaffold": "--", "size": ":"}
-SPLIT_LABEL  = {"random": "Random", "scaffold": "Scaffold", "size": "Size"}
+SPLIT_LSTYLE = {"random": "-", "scaffold": "--", "similarity": "-.", "size": ":"}
+SPLIT_LABEL  = {"random": "Random", "scaffold": "Scaffold (Murcko)", "similarity": "Similarity (Butina@0.70)", "size": "Size"}
 
 HEAD_SHORT  = {
     "emb_proto_mahalanobis": "PNM", "emb_proto_euclid": "PNE",
     "emb_logreg": "LR", "emb_knn": "kNN",
     "ecfp_rf": "RF", "ecfp_logreg": "eLR", "ecfp_proto_euclid": "ePN",
+    "ecfp_proto_tanimoto": "ePNT", "ecfp_gp_tanimoto": "eGPT",
 }
-SPLIT_SHORT = {"random": "rand", "scaffold": "scaf", "size": "size"}
+SPLIT_SHORT = {"random": "rand", "scaffold": "scaf", "similarity": "sim", "size": "size"}
 
 # ── Load data ─────────────────────────────────────────────────────────────────
-run_tag = f"{ENCODER}_classification_{TRAINING_SPLIT}"
-dfs = []
-for seed in SEEDS:
-    tag = f"{run_tag}_seed{seed}"
-    csv = os.path.join(RESULTS_DIR, tag, "baseline_grid.csv")
-    if not os.path.exists(csv):
-        print(f"[WARN] Missing: {csv}")
-        continue
-    df = pd.read_csv(csv)
-    df["seed"] = seed
-    dfs.append(df)
+# emb heads live in <run_tag>/csvs/fsmol_test.csv; the model-free ECFP baselines
+# live once in baselines/csvs/fsmol_test.csv. Merge them per seed.
+from config import make_run_tag   # noqa: E402
+base_csv = os.path.join(BASELINE_CSV_DIR, "fsmol_test.csv")
+base_df  = pd.read_csv(base_csv) if os.path.exists(base_csv) else None
+if base_df is None:
+    print(f"[WARN] No baselines CSV at {base_csv} - ECFP heads will be absent.")
 
-if not dfs:
-    raise FileNotFoundError(f"No baseline_grid.csv found for '{run_tag}' seeds {SEEDS}")
+dfs = []
+if EMB_HEADS:
+    for seed in SEEDS:
+        tag = make_run_tag(ENCODER, "classification", TRAINING_SPLIT, TRAIN_DISTANCE, N_SUPPORT, seed)
+        csv = os.path.join(run_csv_dir(tag), "fsmol_test.csv")
+        if not os.path.exists(csv):
+            print(f"[WARN] Missing: {csv}")
+            continue
+        df = pd.read_csv(csv)
+        df["seed"] = seed
+        if base_df is not None:
+            b = base_df.copy(); b["seed"] = seed
+            df = pd.concat([df, b], ignore_index=True)
+        dfs.append(df)
+    if not dfs:
+        raise FileNotFoundError(f"No fsmol_test.csv found for ENCODER={ENCODER} TRAINING_SPLIT={TRAINING_SPLIT} seeds={SEEDS}")
+    run_tag = make_run_tag(ENCODER, "classification", TRAINING_SPLIT, TRAIN_DISTANCE, N_SUPPORT, SEEDS[0])
+else:
+    # ECFP-only mode: no model needed, load baselines directly
+    if base_df is None:
+        raise FileNotFoundError(f"No baselines CSV at {base_csv}")
+    base_df["seed"] = 0
+    dfs = [base_df]
+    run_tag = "baselines"
 
 combined = pd.concat(dfs, ignore_index=True)
-print(f"Loaded {len(dfs)} seed(s) for {run_tag}")
+print(f"Loaded {len(dfs)} seed(s) | run_tag={run_tag}")
 
 # ── Compute mean +/- std ─────────────────────────────────────────────────────
 records = []
@@ -248,7 +280,7 @@ heads_tag  = "_".join(HEAD_SHORT[h] for h in HEADS)
 splits_tag = "_".join(SPLIT_SHORT[s] for s in EVAL_SPLITS)
 fname      = f"lineplot_{heads_tag}__{splits_tag}.png"
 
-out_dir = os.path.join(FIGURES_DIR, run_tag)
+out_dir = run_fig_dir(run_tag)
 os.makedirs(out_dir, exist_ok=True)
 out_path = os.path.join(out_dir, fname)
 

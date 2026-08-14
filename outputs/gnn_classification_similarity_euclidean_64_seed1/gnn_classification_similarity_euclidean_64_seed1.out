@@ -1,0 +1,309 @@
+main.py | gnn_classification_similarity_euclidean_64_seed1
+  Loading assay 1/157...
+============================================================
+  Data-loss report: test/
+============================================================
+  Molecules in raw files        :     56,220
+  -- Dropped (inexact Relation) :     12,429  (22.1%)
+  -- Dropped (bad/missing fields):       129  (0.2%)
+  -- Dropped (task too small)   :          0  (0.0%)
+  ----------------------------------------
+  Total molecules lost          :     12,558  (22.3%)
+  Molecules used                :     43,662  (77.7%)
+  Tasks kept                    :        154 / 157 (98.1%)
+============================================================
+  FS-Mol degree histogram over 30880 molecules (500 assays).
+Training on: cuda
+  Streaming GNN dataset: 26868 training files, n_support=64, training_split=similarity
+  Streaming GNN dataset: 40 training files, n_support=64, training_split=similarity
+  AMP dtype: torch.bfloat16 (bf16 supported: True)
+  Epochs: 100  |  Tasks/step: 16  |  LR: 0.0001  |  training_split: similarity  |  train_distance: euclidean
+  Train files: 26868  |  Val files: 40
+  Episodes/epoch: 1600  |  Steps/epoch: ~100
+Epoch   1/100 | Steps: 100 | Train BCE: 1.8986 | Train ΔAUPRC: +0.0826 | Val ΔAUPRC: +0.1035
+  → Saved best model (Val ΔAUPRC: +0.1035)
+Epoch   2/100 | Steps: 100 | Train BCE: 0.5277 | Train ΔAUPRC: +0.1306 | Val ΔAUPRC: +0.0998
+Epoch   3/100 | Steps: 100 | Train BCE: 0.4846 | Train ΔAUPRC: +0.1434 | Val ΔAUPRC: +0.0981
+Epoch   4/100 | Steps: 100 | Train BCE: 0.4793 | Train ΔAUPRC: +0.1487 | Val ΔAUPRC: +0.0962
+Epoch   5/100 | Steps: 100 | Train BCE: 0.4687 | Train ΔAUPRC: +0.1527 | Val ΔAUPRC: +0.1011
+Epoch   6/100 | Steps: 100 | Train BCE: 0.4498 | Train ΔAUPRC: +0.1493 | Val ΔAUPRC: +0.0966
+Epoch   7/100 | Steps: 100 | Train BCE: 0.4615 | Train ΔAUPRC: +0.1623 | Val ΔAUPRC: +0.1043
+  → Saved best model (Val ΔAUPRC: +0.1043)
+Epoch   8/100 | Steps: 100 | Train BCE: 0.4629 | Train ΔAUPRC: +0.1647 | Val ΔAUPRC: +0.1076
+  → Saved best model (Val ΔAUPRC: +0.1076)
+Epoch   9/100 | Steps: 100 | Train BCE: 0.4513 | Train ΔAUPRC: +0.1693 | Val ΔAUPRC: +0.1213
+  → Saved best model (Val ΔAUPRC: +0.1213)
+Epoch  10/100 | Steps: 100 | Train BCE: 0.4479 | Train ΔAUPRC: +0.1700 | Val ΔAUPRC: +0.1146
+Epoch  11/100 | Steps: 100 | Train BCE: 0.4326 | Train ΔAUPRC: +0.1708 | Val ΔAUPRC: +0.1253
+  → Saved best model (Val ΔAUPRC: +0.1253)
+Epoch  12/100 | Steps: 100 | Train BCE: 0.4290 | Train ΔAUPRC: +0.1742 | Val ΔAUPRC: +0.1357
+  → Saved best model (Val ΔAUPRC: +0.1357)
+Epoch  13/100 | Steps: 100 | Train BCE: 0.4252 | Train ΔAUPRC: +0.1764 | Val ΔAUPRC: +0.1171
+Epoch  14/100 | Steps: 100 | Train BCE: 0.4194 | Train ΔAUPRC: +0.1787 | Val ΔAUPRC: +0.1395
+  → Saved best model (Val ΔAUPRC: +0.1395)
+Epoch  15/100 | Steps: 100 | Train BCE: 0.4138 | Train ΔAUPRC: +0.1770 | Val ΔAUPRC: +0.1031
+Epoch  16/100 | Steps: 100 | Train BCE: 0.4041 | Train ΔAUPRC: +0.1829 | Val ΔAUPRC: +0.1338
+Epoch  17/100 | Steps: 100 | Train BCE: 0.4070 | Train ΔAUPRC: +0.1795 | Val ΔAUPRC: +0.1360
+Epoch  18/100 | Steps: 100 | Train BCE: 0.4155 | Train ΔAUPRC: +0.1857 | Val ΔAUPRC: +0.1404
+  → Saved best model (Val ΔAUPRC: +0.1404)
+Epoch  19/100 | Steps: 100 | Train BCE: 0.4077 | Train ΔAUPRC: +0.1855 | Val ΔAUPRC: +0.1217
+Epoch  20/100 | Steps: 100 | Train BCE: 0.3890 | Train ΔAUPRC: +0.1866 | Val ΔAUPRC: +0.1246
+Epoch  21/100 | Steps: 100 | Train BCE: 0.4051 | Train ΔAUPRC: +0.1827 | Val ΔAUPRC: +0.1491
+  → Saved best model (Val ΔAUPRC: +0.1491)
+Epoch  22/100 | Steps: 100 | Train BCE: 0.3930 | Train ΔAUPRC: +0.1957 | Val ΔAUPRC: +0.1535
+  → Saved best model (Val ΔAUPRC: +0.1535)
+Epoch  23/100 | Steps: 100 | Train BCE: 0.4117 | Train ΔAUPRC: +0.1920 | Val ΔAUPRC: +0.1728
+  → Saved best model (Val ΔAUPRC: +0.1728)
+Epoch  24/100 | Steps: 100 | Train BCE: 0.3944 | Train ΔAUPRC: +0.1975 | Val ΔAUPRC: +0.1688
+Epoch  25/100 | Steps: 100 | Train BCE: 0.3960 | Train ΔAUPRC: +0.1946 | Val ΔAUPRC: +0.1583
+Epoch  26/100 | Steps: 100 | Train BCE: 0.3868 | Train ΔAUPRC: +0.1907 | Val ΔAUPRC: +0.1546
+Epoch  27/100 | Steps: 100 | Train BCE: 0.3799 | Train ΔAUPRC: +0.1975 | Val ΔAUPRC: +0.1637
+Epoch  28/100 | Steps: 100 | Train BCE: 0.3982 | Train ΔAUPRC: +0.1971 | Val ΔAUPRC: +0.1688
+Epoch  29/100 | Steps: 100 | Train BCE: 0.3882 | Train ΔAUPRC: +0.2026 | Val ΔAUPRC: +0.1746
+  → Saved best model (Val ΔAUPRC: +0.1746)
+Epoch  30/100 | Steps: 100 | Train BCE: 0.3853 | Train ΔAUPRC: +0.2005 | Val ΔAUPRC: +0.1524
+Epoch  31/100 | Steps: 100 | Train BCE: 0.3832 | Train ΔAUPRC: +0.2073 | Val ΔAUPRC: +0.1694
+Epoch  32/100 | Steps: 100 | Train BCE: 0.3748 | Train ΔAUPRC: +0.2065 | Val ΔAUPRC: +0.1580
+Epoch  33/100 | Steps: 100 | Train BCE: 0.3906 | Train ΔAUPRC: +0.1986 | Val ΔAUPRC: +0.1515
+Epoch  34/100 | Steps: 100 | Train BCE: 0.3726 | Train ΔAUPRC: +0.2081 | Val ΔAUPRC: +0.1743
+Epoch  35/100 | Steps: 100 | Train BCE: 0.3639 | Train ΔAUPRC: +0.2135 | Val ΔAUPRC: +0.1670
+Epoch  36/100 | Steps: 100 | Train BCE: 0.3506 | Train ΔAUPRC: +0.2024 | Val ΔAUPRC: +0.1747
+  → Saved best model (Val ΔAUPRC: +0.1747)
+Epoch  37/100 | Steps: 100 | Train BCE: 0.3747 | Train ΔAUPRC: +0.2054 | Val ΔAUPRC: +0.1868
+  → Saved best model (Val ΔAUPRC: +0.1868)
+Epoch  38/100 | Steps: 100 | Train BCE: 0.3553 | Train ΔAUPRC: +0.2045 | Val ΔAUPRC: +0.1788
+Epoch  39/100 | Steps: 100 | Train BCE: 0.3621 | Train ΔAUPRC: +0.2103 | Val ΔAUPRC: +0.1750
+Epoch  40/100 | Steps: 100 | Train BCE: 0.3815 | Train ΔAUPRC: +0.2146 | Val ΔAUPRC: +0.1655
+Epoch  41/100 | Steps: 100 | Train BCE: 0.3732 | Train ΔAUPRC: +0.2012 | Val ΔAUPRC: +0.1751
+Epoch  42/100 | Steps: 100 | Train BCE: 0.3788 | Train ΔAUPRC: +0.2097 | Val ΔAUPRC: +0.1708
+Epoch  43/100 | Steps: 100 | Train BCE: 0.3566 | Train ΔAUPRC: +0.2095 | Val ΔAUPRC: +0.1743
+Epoch  44/100 | Steps: 100 | Train BCE: 0.3600 | Train ΔAUPRC: +0.2118 | Val ΔAUPRC: +0.1815
+Epoch  45/100 | Steps: 100 | Train BCE: 0.3576 | Train ΔAUPRC: +0.2200 | Val ΔAUPRC: +0.1729
+Epoch  46/100 | Steps: 100 | Train BCE: 0.3518 | Train ΔAUPRC: +0.2072 | Val ΔAUPRC: +0.1901
+  → Saved best model (Val ΔAUPRC: +0.1901)
+Epoch  47/100 | Steps: 100 | Train BCE: 0.3586 | Train ΔAUPRC: +0.2143 | Val ΔAUPRC: +0.1867
+Epoch  48/100 | Steps: 100 | Train BCE: 0.3502 | Train ΔAUPRC: +0.2258 | Val ΔAUPRC: +0.1802
+Epoch  49/100 | Steps: 100 | Train BCE: 0.3570 | Train ΔAUPRC: +0.2216 | Val ΔAUPRC: +0.1541
+Epoch  50/100 | Steps: 100 | Train BCE: 0.3513 | Train ΔAUPRC: +0.2169 | Val ΔAUPRC: +0.1622
+Epoch  51/100 | Steps: 100 | Train BCE: 0.3472 | Train ΔAUPRC: +0.2179 | Val ΔAUPRC: +0.1649
+Epoch  52/100 | Steps: 100 | Train BCE: 0.3470 | Train ΔAUPRC: +0.2320 | Val ΔAUPRC: +0.1872
+Epoch  53/100 | Steps: 100 | Train BCE: 0.3433 | Train ΔAUPRC: +0.2187 | Val ΔAUPRC: +0.1687
+Epoch  54/100 | Steps: 100 | Train BCE: 0.3410 | Train ΔAUPRC: +0.2268 | Val ΔAUPRC: +0.1824
+Epoch  55/100 | Steps: 100 | Train BCE: 0.3580 | Train ΔAUPRC: +0.2271 | Val ΔAUPRC: +0.1586
+Epoch  56/100 | Steps: 100 | Train BCE: 0.3514 | Train ΔAUPRC: +0.2225 | Val ΔAUPRC: +0.1696
+Epoch  57/100 | Steps: 100 | Train BCE: 0.3493 | Train ΔAUPRC: +0.2218 | Val ΔAUPRC: +0.1704
+Epoch  58/100 | Steps: 100 | Train BCE: 0.3489 | Train ΔAUPRC: +0.2318 | Val ΔAUPRC: +0.1683
+Epoch  59/100 | Steps: 100 | Train BCE: 0.3470 | Train ΔAUPRC: +0.2318 | Val ΔAUPRC: +0.1673
+Epoch  60/100 | Steps: 100 | Train BCE: 0.3403 | Train ΔAUPRC: +0.2287 | Val ΔAUPRC: +0.1717
+Epoch  61/100 | Steps: 100 | Train BCE: 0.3418 | Train ΔAUPRC: +0.2267 | Val ΔAUPRC: +0.1848
+Epoch  62/100 | Steps: 100 | Train BCE: 0.3442 | Train ΔAUPRC: +0.2273 | Val ΔAUPRC: +0.1832
+Epoch  63/100 | Steps: 100 | Train BCE: 0.3590 | Train ΔAUPRC: +0.2289 | Val ΔAUPRC: +0.1741
+Epoch  64/100 | Steps: 100 | Train BCE: 0.3465 | Train ΔAUPRC: +0.2281 | Val ΔAUPRC: +0.1837
+Epoch  65/100 | Steps: 100 | Train BCE: 0.3463 | Train ΔAUPRC: +0.2193 | Val ΔAUPRC: +0.1809
+Epoch  66/100 | Steps: 100 | Train BCE: 0.3320 | Train ΔAUPRC: +0.2244 | Val ΔAUPRC: +0.1790
+Epoch  67/100 | Steps: 100 | Train BCE: 0.3471 | Train ΔAUPRC: +0.2377 | Val ΔAUPRC: +0.1760
+Epoch  68/100 | Steps: 100 | Train BCE: 0.3467 | Train ΔAUPRC: +0.2413 | Val ΔAUPRC: +0.1963
+  → Saved best model (Val ΔAUPRC: +0.1963)
+Epoch  69/100 | Steps: 100 | Train BCE: 0.3453 | Train ΔAUPRC: +0.2244 | Val ΔAUPRC: +0.1685
+Epoch  70/100 | Steps: 100 | Train BCE: 0.3540 | Train ΔAUPRC: +0.2238 | Val ΔAUPRC: +0.1723
+Epoch  71/100 | Steps: 100 | Train BCE: 0.3462 | Train ΔAUPRC: +0.2268 | Val ΔAUPRC: +0.1765
+Epoch  72/100 | Steps: 100 | Train BCE: 0.3369 | Train ΔAUPRC: +0.2299 | Val ΔAUPRC: +0.1794
+Epoch  73/100 | Steps: 100 | Train BCE: 0.3426 | Train ΔAUPRC: +0.2303 | Val ΔAUPRC: +0.1612
+Epoch  74/100 | Steps: 100 | Train BCE: 0.3395 | Train ΔAUPRC: +0.2304 | Val ΔAUPRC: +0.1898
+Epoch  75/100 | Steps: 100 | Train BCE: 0.3405 | Train ΔAUPRC: +0.2383 | Val ΔAUPRC: +0.1627
+Epoch  76/100 | Steps: 100 | Train BCE: 0.3354 | Train ΔAUPRC: +0.2283 | Val ΔAUPRC: +0.1717
+Epoch  77/100 | Steps: 100 | Train BCE: 0.3262 | Train ΔAUPRC: +0.2357 | Val ΔAUPRC: +0.1941
+Epoch  78/100 | Steps: 100 | Train BCE: 0.3361 | Train ΔAUPRC: +0.2371 | Val ΔAUPRC: +0.1819
+Epoch  79/100 | Steps: 100 | Train BCE: 0.3343 | Train ΔAUPRC: +0.2311 | Val ΔAUPRC: +0.1827
+Epoch  80/100 | Steps: 100 | Train BCE: 0.3377 | Train ΔAUPRC: +0.2337 | Val ΔAUPRC: +0.1984
+  → Saved best model (Val ΔAUPRC: +0.1984)
+Epoch  81/100 | Steps: 100 | Train BCE: 0.3367 | Train ΔAUPRC: +0.2339 | Val ΔAUPRC: +0.1830
+Epoch  82/100 | Steps: 100 | Train BCE: 0.3169 | Train ΔAUPRC: +0.2429 | Val ΔAUPRC: +0.1668
+Epoch  83/100 | Steps: 100 | Train BCE: 0.3299 | Train ΔAUPRC: +0.2340 | Val ΔAUPRC: +0.1856
+Epoch  84/100 | Steps: 100 | Train BCE: 0.3278 | Train ΔAUPRC: +0.2327 | Val ΔAUPRC: +0.1700
+Epoch  85/100 | Steps: 100 | Train BCE: 0.3415 | Train ΔAUPRC: +0.2340 | Val ΔAUPRC: +0.1807
+Epoch  86/100 | Steps: 100 | Train BCE: 0.3315 | Train ΔAUPRC: +0.2283 | Val ΔAUPRC: +0.1778
+Epoch  87/100 | Steps: 100 | Train BCE: 0.3463 | Train ΔAUPRC: +0.2226 | Val ΔAUPRC: +0.1763
+Epoch  88/100 | Steps: 100 | Train BCE: 0.3311 | Train ΔAUPRC: +0.2375 | Val ΔAUPRC: +0.1795
+Epoch  89/100 | Steps: 100 | Train BCE: 0.3416 | Train ΔAUPRC: +0.2346 | Val ΔAUPRC: +0.1857
+Epoch  90/100 | Steps: 100 | Train BCE: 0.3229 | Train ΔAUPRC: +0.2303 | Val ΔAUPRC: +0.1875
+Epoch  91/100 | Steps: 100 | Train BCE: 0.3274 | Train ΔAUPRC: +0.2376 | Val ΔAUPRC: +0.1813
+Epoch  92/100 | Steps: 100 | Train BCE: 0.3388 | Train ΔAUPRC: +0.2410 | Val ΔAUPRC: +0.1620
+Epoch  93/100 | Steps: 100 | Train BCE: 0.3161 | Train ΔAUPRC: +0.2405 | Val ΔAUPRC: +0.1658
+Epoch  94/100 | Steps: 100 | Train BCE: 0.3249 | Train ΔAUPRC: +0.2416 | Val ΔAUPRC: +0.1811
+Epoch  95/100 | Steps: 100 | Train BCE: 0.3297 | Train ΔAUPRC: +0.2233 | Val ΔAUPRC: +0.1907
+Epoch  96/100 | Steps: 100 | Train BCE: 0.3417 | Train ΔAUPRC: +0.2422 | Val ΔAUPRC: +0.1888
+Epoch  97/100 | Steps: 100 | Train BCE: 0.3325 | Train ΔAUPRC: +0.2379 | Val ΔAUPRC: +0.1605
+Epoch  98/100 | Steps: 100 | Train BCE: 0.3353 | Train ΔAUPRC: +0.2310 | Val ΔAUPRC: +0.1829
+Epoch  99/100 | Steps: 100 | Train BCE: 0.3283 | Train ΔAUPRC: +0.2445 | Val ΔAUPRC: +0.1821
+Epoch 100/100 | Steps: 100 | Train BCE: 0.3256 | Train ΔAUPRC: +0.2388 | Val ΔAUPRC: +0.1783
+
+Pretraining complete. Best Val ΔAUPRC: +0.1984
+  eval 20/154 assays...
+  eval 40/154 assays...
+  eval 60/154 assays...
+  eval 80/154 assays...
+  eval 100/154 assays...
+  eval 120/154 assays...
+  eval 140/154 assays...
+
+=== FS-Mol test summary [gnn_classification_similarity_euclidean_64_seed1 · emb] ===
+
+-- split = random --
+                                    dAUPRC  AUROC  n_assays
+head                  support_size                         
+emb_knn               16             0.083  0.614       154
+                      32             0.103  0.636       154
+                      64             0.125  0.661       153
+                      128            0.157  0.688       148
+                      256            0.113  0.674        29
+                      512            0.103  0.641        11
+emb_logreg            16             0.119  0.635       154
+                      32             0.136  0.652       154
+                      64             0.153  0.669       153
+                      128            0.175  0.681       148
+                      256            0.126  0.667        29
+                      512            0.122  0.641        11
+emb_proto_euclid      16             0.134  0.649       154
+                      32             0.161  0.675       154
+                      64             0.183  0.699       153
+                      128            0.201  0.713       148
+                      256            0.134  0.691        29
+                      512            0.115  0.627        11
+emb_proto_mahalanobis 16             0.124  0.640       154
+                      32             0.153  0.668       154
+                      64             0.182  0.699       153
+                      128            0.208  0.722       148
+                      256            0.152  0.707        29
+                      512            0.143  0.654        11
+
+-- split = scaffold --
+                                    dAUPRC  AUROC  n_assays
+head                  support_size                         
+emb_knn               16             0.072  0.599       154
+                      32             0.093  0.625       154
+                      64             0.113  0.646       153
+                      128            0.138  0.665       148
+                      256            0.098  0.655        29
+                      512            0.086  0.622        11
+emb_logreg            16             0.104  0.617       154
+                      32             0.123  0.632       154
+                      64             0.139  0.649       153
+                      128            0.165  0.662       148
+                      256            0.110  0.635        29
+                      512            0.119  0.635        11
+emb_proto_euclid      16             0.121  0.634       154
+                      32             0.148  0.659       154
+                      64             0.174  0.685       153
+                      128            0.198  0.700       148
+                      256            0.118  0.656        29
+                      512            0.122  0.643        11
+emb_proto_mahalanobis 16             0.112  0.625       154
+                      32             0.141  0.651       154
+                      64             0.171  0.680       153
+                      128            0.205  0.707       148
+                      256            0.136  0.677        29
+                      512            0.143  0.664        11
+
+-- split = similarity --
+                                    dAUPRC  AUROC  n_assays
+head                  support_size                         
+emb_knn               16             0.073  0.599       142
+                      32             0.092  0.623       143
+                      64             0.108  0.640       141
+                      128            0.132  0.653       137
+                      256            0.081  0.632        27
+                      512            0.062  0.587        11
+emb_logreg            16             0.100  0.607       142
+                      32             0.119  0.627       143
+                      64             0.132  0.636       141
+                      128            0.160  0.653       137
+                      256            0.086  0.631        27
+                      512            0.086  0.593        11
+emb_proto_euclid      16             0.121  0.632       142
+                      32             0.147  0.654       143
+                      64             0.167  0.674       141
+                      128            0.195  0.694       137
+                      256            0.109  0.663        27
+                      512            0.105  0.611        11
+emb_proto_mahalanobis 16             0.111  0.617       142
+                      32             0.136  0.645       143
+                      64             0.161  0.669       141
+                      128            0.201  0.700       137
+                      256            0.116  0.682        27
+                      512            0.120  0.628        11
+
+-- split = size --
+                                    dAUPRC  AUROC  n_assays
+head                  support_size                         
+emb_knn               16             0.063  0.581       154
+                      32             0.076  0.597       153
+                      64             0.087  0.616       148
+                      128            0.040  0.575        30
+                      256            0.058  0.585        11
+                      512            0.059  0.578         5
+emb_logreg            16             0.093  0.602       154
+                      32             0.100  0.609       153
+                      64             0.101  0.613       148
+                      128            0.040  0.567        30
+                      256            0.068  0.582        11
+                      512            0.086  0.597         5
+emb_proto_euclid      16             0.114  0.622       154
+                      32             0.131  0.638       153
+                      64             0.145  0.654       148
+                      128            0.062  0.617        30
+                      256            0.082  0.602        11
+                      512            0.104  0.621         5
+emb_proto_mahalanobis 16             0.098  0.607       154
+                      32             0.117  0.626       153
+                      64             0.136  0.645       148
+                      128            0.063  0.602        30
+                      256            0.093  0.610        11
+                      512            0.117  0.627         5
+  saved -> /home/chjo00006/PTN/outputs/gnn_classification_similarity_euclidean_64_seed1/csvs/fsmol_test.csv
+  lbap_core_ic50_scaffold: train pool=22025, ood_test=19480, iid_test=31388
+  lbap_core_ic50_size: train pool=37497, ood_test=16761, iid_test=12721
+  lbap_core_ic50_assay: train pool=34953, ood_test=19463, iid_test=11960
+lbap_core_ic50_scaffold             | ctx=  16 | ood_test | AUROC: 0.5475 | dAUPRC: +0.0310+/-0.0173 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx=  16 | iid_test | AUROC: 0.5783 | dAUPRC: +0.0209+/-0.0065 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx=  32 | ood_test | AUROC: 0.5492 | dAUPRC: +0.0357+/-0.0105 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx=  32 | iid_test | AUROC: 0.5986 | dAUPRC: +0.0264+/-0.0046 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx=  64 | ood_test | AUROC: 0.5535 | dAUPRC: +0.0352+/-0.0157 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx=  64 | iid_test | AUROC: 0.6258 | dAUPRC: +0.0335+/-0.0058 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx= 128 | ood_test | AUROC: 0.5543 | dAUPRC: +0.0364+/-0.0099 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx= 128 | iid_test | AUROC: 0.6684 | dAUPRC: +0.0445+/-0.0017 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx= 256 | ood_test | AUROC: 0.5641 | dAUPRC: +0.0389+/-0.0106 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx= 256 | iid_test | AUROC: 0.6838 | dAUPRC: +0.0483+/-0.0019 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx= 512 | ood_test | AUROC: 0.5819 | dAUPRC: +0.0494+/-0.0084 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_scaffold             | ctx= 512 | iid_test | AUROC: 0.7166 | dAUPRC: +0.0551+/-0.0008 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx=  16 | ood_test | AUROC: 0.5097 | dAUPRC: +0.0076+/-0.0168 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx=  16 | iid_test | AUROC: 0.5487 | dAUPRC: +0.0096+/-0.0054 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx=  32 | ood_test | AUROC: 0.5162 | dAUPRC: +0.0120+/-0.0127 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx=  32 | iid_test | AUROC: 0.5695 | dAUPRC: +0.0113+/-0.0088 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx=  64 | ood_test | AUROC: 0.5284 | dAUPRC: +0.0169+/-0.0114 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx=  64 | iid_test | AUROC: 0.6082 | dAUPRC: +0.0194+/-0.0050 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx= 128 | ood_test | AUROC: 0.5400 | dAUPRC: +0.0279+/-0.0057 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx= 128 | iid_test | AUROC: 0.6459 | dAUPRC: +0.0274+/-0.0018 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx= 256 | ood_test | AUROC: 0.5514 | dAUPRC: +0.0362+/-0.0069 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx= 256 | iid_test | AUROC: 0.6906 | dAUPRC: +0.0346+/-0.0030 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx= 512 | ood_test | AUROC: 0.5693 | dAUPRC: +0.0467+/-0.0066 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_size                 | ctx= 512 | iid_test | AUROC: 0.7174 | dAUPRC: +0.0395+/-0.0022 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx=  16 | ood_test | AUROC: 0.5735 | dAUPRC: +0.0282+/-0.0119 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx=  16 | iid_test | AUROC: 0.6549 | dAUPRC: +0.0448+/-0.0108 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx=  32 | ood_test | AUROC: 0.5957 | dAUPRC: +0.0386+/-0.0117 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx=  32 | iid_test | AUROC: 0.6860 | dAUPRC: +0.0549+/-0.0068 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx=  64 | ood_test | AUROC: 0.6219 | dAUPRC: +0.0489+/-0.0074 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx=  64 | iid_test | AUROC: 0.7023 | dAUPRC: +0.0575+/-0.0018 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx= 128 | ood_test | AUROC: 0.6408 | dAUPRC: +0.0558+/-0.0069 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx= 128 | iid_test | AUROC: 0.7442 | dAUPRC: +0.0692+/-0.0038 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx= 256 | ood_test | AUROC: 0.6494 | dAUPRC: +0.0606+/-0.0058 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx= 256 | iid_test | AUROC: 0.7745 | dAUPRC: +0.0779+/-0.0012 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx= 512 | ood_test | AUROC: 0.6591 | dAUPRC: +0.0640+/-0.0049 (base rate active shown in n_test) | RMSE: nan
+lbap_core_ic50_assay                | ctx= 512 | iid_test | AUROC: 0.7893 | dAUPRC: +0.0802+/-0.0028 (base rate active shown in n_test) | RMSE: nan
+
+=== DrugOOD summary (ood_test, mean over context sizes) ===
+                         auroc  delta_auprc
+split_type                                 
+lbap_core_ic50_assay     0.623        0.049
+lbap_core_ic50_scaffold  0.558        0.038
+lbap_core_ic50_size      0.536        0.025

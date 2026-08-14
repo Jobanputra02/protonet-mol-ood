@@ -42,4 +42,5 @@ Thumbs.db
 *.csv
 
 *.md
-archive/
+outputs_old/
+Thesis Proposal Paper/

@@ -15,12 +15,10 @@ import torch.nn.functional as F
 import numpy as np
 import pandas as pd
 from scipy import stats
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, roc_auc_score
 from model import (PrototypicalNetworkRegression, PrototypicalNetworkClassification,
-                   ECFPEncoder, PNAGNNEncoder, FSMolGNNEncoder, _mahalanobis_dists)
+                   ECFPEncoder, FSMolGNNEncoder, _mahalanobis_dists)
 from data import DrugOODEvalDataset, AssayDataset
-
-from config import RESULTS_DIR
 
 
 # =============================================================================
@@ -31,10 +29,27 @@ def delta_auprc(predictions_continuous: np.ndarray, binary_labels: np.ndarray) -
     """
     ΔAUPRC = AUPRC(model) − fraction_of_actives_in_query.
     The subtracted term is the random-classifier baseline (FS-Mol paper, eq. 1).
+
+    CAVEAT: ΔAUPRC's ceiling is (1 − fraction_active). On DrugOOD (74-94% active) that
+    ceiling is ~0.22, so this metric is compressed and prevalence-sensitive there. Report
+    auroc() as the headline for imbalanced query sets and keep ΔAUPRC as secondary WITH the
+    base rate stated.
     """
     auprc_model     = average_precision_score(binary_labels, predictions_continuous)
     random_baseline = float(binary_labels.mean())
     return float(auprc_model - random_baseline)
+
+
+def auroc(predictions_continuous: np.ndarray, binary_labels: np.ndarray) -> float:
+    """
+    Area under the ROC curve = P(model scores a random active above a random inactive).
+    0.5 = no ranking ability, 1.0 = perfect ordering. Prevalence-INDEPENDENT, so unlike
+    ΔAUPRC it is not squeezed by DrugOOD's heavy active-skew - the honest headline metric
+    for imbalanced OOD query sets. Returns NaN if the query set is single-class.
+    """
+    if binary_labels is None or len(np.unique(binary_labels)) < 2:
+        return float("nan")
+    return float(roc_auc_score(binary_labels, predictions_continuous))
 
 
 def spearman_correlation(predictions: np.ndarray, targets: np.ndarray) -> float:
@@ -50,156 +65,7 @@ def _unwrap(model):
 
 
 def _is_gnn(model) -> bool:
-    return isinstance(_unwrap(model).encoder, (PNAGNNEncoder, FSMolGNNEncoder))
-
-
-def _is_fsmol_gnn(model) -> bool:
     return isinstance(_unwrap(model).encoder, FSMolGNNEncoder)
-
-
-def _mol_input(assay: AssayDataset, indices, device: torch.device, gnn: bool,
-               fsmol_style: bool = False):
-    """
-    Build the encoder input for `indices` from `assay`.
-    ECFP: returns Tensor(n, 2048).
-    GNN:  builds PyG graphs from SMILES and returns a PyG Batch on `device`.
-    fsmol_style=True uses smiles_to_fsmol_graph for FSMolGNNEncoder.
-    """
-    if gnn:
-        from torch_geometric.data import Batch as PyGBatch
-        if fsmol_style:
-            from featurize import smiles_to_fsmol_graph, FSMOL_NODE_FEAT_DIM
-            from torch_geometric.data import Data
-            _dummy = Data(
-                x=torch.zeros((1, FSMOL_NODE_FEAT_DIM), dtype=torch.float),
-                edge_index=torch.zeros((2, 0), dtype=torch.long),
-                edge_attr=torch.zeros((0, 3), dtype=torch.float),
-                ecfp=torch.zeros((1, 2048), dtype=torch.float),
-                descriptors=torch.zeros((1, 42), dtype=torch.float),
-            )
-            graphs = []
-            for i in indices:
-                smi = assay.scaffolds[i]
-                g   = smiles_to_fsmol_graph(smi)
-                graphs.append(g if g is not None else _dummy)
-        else:
-            from featurize import smiles_to_graph, NODE_FEAT_DIM, EDGE_FEAT_DIM
-            from torch_geometric.data import Data
-            _dummy = Data(
-                x=torch.zeros((1, NODE_FEAT_DIM), dtype=torch.float),
-                edge_index=torch.zeros((2, 0), dtype=torch.long),
-                edge_attr=torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float),
-            )
-            graphs = []
-            for i in indices:
-                smi = assay.scaffolds[i]
-                g   = smiles_to_graph(smi)
-                graphs.append(g if g is not None else _dummy)
-        return PyGBatch.from_data_list(graphs).to(device)
-    else:
-        return torch.tensor(
-            np.stack([assay.fingerprints[i] for i in indices])
-        ).to(device)
-
-
-# =============================================================================
-# TTPA - TEST-TIME PROTOTYPE ADAPTATION
-# =============================================================================
-#
-# Why: On scaffold-split evaluation the support set is drawn from one scaffold
-# family while query molecules have novel scaffolds.  The standard ProtoNet
-# prototype (unweighted mean of support embeddings) therefore lands in the
-# embedding region of the context scaffold rather than the query scaffold.
-#
-# Fix: reweight each support molecule's contribution to the prototype by how
-# similar it is to the query molecules in fingerprint space.  Support molecules
-# whose scaffolds happen to be more similar to the query get higher weight,
-# nudging the prototype toward where the query molecules actually live.
-#
-# Weights use mean binary Tanimoto (Jaccard) over all query molecules:
-#   w_i = (1/|Q|) * sum_{q in Q} Tanimoto_bin(fp_i, fp_q)
-# where Tanimoto_bin binarises ECFP count vectors (> 0 → 1) before computing.
-#
-# Training-free: plug-and-play on any pre-trained classification checkpoint.
-# Only affects predict_from_embeddings; training loop is unchanged.
-
-def _tanimoto_weights(sup_fps: np.ndarray, qry_fps: np.ndarray) -> np.ndarray:
-    """
-    Mean binary Tanimoto similarity from each support molecule to the query set.
-
-    Args:
-        sup_fps: (n_sup, 2048) ECFP count fingerprints for support molecules
-        qry_fps: (n_qry, 2048) ECFP count fingerprints for query molecules
-    Returns:
-        weights: (n_sup,) float32 in [0, 1] - higher = more similar to query
-    """
-    sup_bin = (sup_fps > 0).astype(np.float32)   # (n_sup, 2048)
-    qry_bin = (qry_fps > 0).astype(np.float32)   # (n_qry, 2048)
-
-    dot  = sup_bin @ qry_bin.T                   # (n_sup, n_qry) intersection sizes
-    a_sz = sup_bin.sum(axis=1, keepdims=True)    # (n_sup, 1)
-    b_sz = qry_bin.sum(axis=1, keepdims=True)    # (n_qry, 1)
-    union = a_sz + b_sz.T - dot                  # (n_sup, n_qry)
-    tanimoto = dot / (union + 1e-8)              # (n_sup, n_qry)
-    return tanimoto.mean(axis=1)                 # (n_sup,)
-
-
-def _predict_ttpa(
-    sup_emb:    torch.Tensor,
-    sup_labels: torch.Tensor,
-    qry_emb:    torch.Tensor,
-    sup_fps:    np.ndarray,
-    qry_fps:    np.ndarray,
-) -> torch.Tensor:
-    """
-    ProtoNet prediction with Tanimoto-weighted prototypes (TTPA).
-
-    Prototype computation:
-      proto_active   = weighted_mean(sup_emb[active],   w[active])
-      proto_inactive = weighted_mean(sup_emb[inactive], w[inactive])
-    where w_i = mean Tanimoto(fp_i, query_fps).
-
-    Covariance for Mahalanobis distance uses the original unweighted support
-    embeddings - only the prototype centre is adapted, not the uncertainty.
-
-    Args:
-        sup_emb:    (n_sup, emb_dim) pre-encoded support embeddings (on device)
-        sup_labels: (n_sup,) binary labels 0/1
-        qry_emb:    (n_qry, emb_dim) pre-encoded query embeddings (on device)
-        sup_fps:    (n_sup, 2048) ECFP fingerprints (numpy, CPU)
-        qry_fps:    (n_qry, 2048) ECFP fingerprints (numpy, CPU)
-    Returns:
-        p_active: (n_qry,) P(active) for each query molecule
-    """
-    active_mask = sup_labels > 0.5
-    if not active_mask.any() or not (~active_mask).any():
-        return torch.full((qry_emb.shape[0],), 0.5, device=qry_emb.device)
-
-    # Tanimoto weights: (n_sup,) on device
-    w = torch.tensor(
-        _tanimoto_weights(sup_fps, qry_fps),
-        dtype=torch.float32, device=sup_emb.device,
-    )
-
-    # Weighted prototype for each class - normalise within class so weights sum to 1
-    w_act = w * active_mask.float()
-    w_act = w_act / w_act.sum().clamp(min=1e-8)
-    proto_active = (w_act.unsqueeze(1) * sup_emb).sum(0)          # (emb_dim,)
-
-    w_ina = w * (~active_mask).float()
-    w_ina = w_ina / w_ina.sum().clamp(min=1e-8)
-    proto_inactive = (w_ina.unsqueeze(1) * sup_emb).sum(0)        # (emb_dim,)
-
-    protos = torch.stack([proto_active, proto_inactive], dim=0)    # (2, emb_dim)
-
-    # Mahalanobis distance uses the original sup_emb for covariance estimation
-    dists = _mahalanobis_dists(qry_emb, protos, sup_emb, active_mask)
-    return F.softmax(-dists, dim=1)[:, 0]
-
-
-def _get_fps(assay: AssayDataset, indices) -> np.ndarray:
-    """Stack ECFP fingerprints from assay for given indices. Returns (n, 2048) float32."""
-    return np.stack([assay.fingerprints[i] for i in indices]).astype(np.float32)
 
 
 def _compute_metrics(preds_np, targets_np, binary_labels, is_classification: bool = False):
@@ -212,12 +78,15 @@ def _compute_metrics(preds_np, targets_np, binary_labels, is_classification: boo
             and binary_labels.sum() > 0
             and binary_labels.sum() < len(binary_labels)):
         d_auprc = delta_auprc(preds_np, binary_labels)
+        auc     = auroc(preds_np, binary_labels)
     else:
         d_auprc = float("nan")
+        auc     = float("nan")
 
     if is_classification:
         return {
             "delta_auprc": d_auprc,
+            "auroc":       auc,
             "rmse":        float("nan"),
             "mae":         float("nan"),
             "spearman":    float("nan"),
@@ -225,6 +94,7 @@ def _compute_metrics(preds_np, targets_np, binary_labels, is_classification: boo
 
     return {
         "delta_auprc": d_auprc,
+        "auroc":       auc,
         "rmse":        float(np.sqrt(np.mean((preds_np - targets_np) ** 2))),
         "mae":         float(np.mean(np.abs(preds_np - targets_np))),
         "spearman":    spearman_correlation(preds_np, targets_np),
@@ -232,81 +102,40 @@ def _compute_metrics(preds_np, targets_np, binary_labels, is_classification: boo
 
 
 # =============================================================================
-# MULTI-SCALE EVALUATION (Phase 3 - main evaluation function)
+# MULTI-SCALE EVALUATION
 # =============================================================================
 
-def _smiles_to_batch(smiles_list: list[str], device: torch.device,
-                     fsmol_style: bool = False):
-    """Convert a list of SMILES to a PyG Batch on device. Used for GNN DrugOOD eval."""
-    from torch_geometric.data import Batch as PyGBatch, Data
-    if fsmol_style:
-        from featurize import smiles_to_fsmol_graph, FSMOL_NODE_FEAT_DIM
-        dummy = Data(
-            x=torch.zeros((1, FSMOL_NODE_FEAT_DIM), dtype=torch.float),
-            edge_index=torch.zeros((2, 0), dtype=torch.long),
-            edge_attr=torch.zeros((0, 3), dtype=torch.float),
-            ecfp=torch.zeros((1, 2048), dtype=torch.float),
-            descriptors=torch.zeros((1, 42), dtype=torch.float),
-        )
-        graphs = [smiles_to_fsmol_graph(smi) or dummy for smi in smiles_list]
-    else:
-        from featurize import smiles_to_graph, NODE_FEAT_DIM, EDGE_FEAT_DIM
-        dummy = Data(
-            x=torch.zeros((1, NODE_FEAT_DIM), dtype=torch.float),
-            edge_index=torch.zeros((2, 0), dtype=torch.long),
-            edge_attr=torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float),
-        )
-        graphs = [smiles_to_graph(smi) or dummy for smi in smiles_list]
+def _fsmol_dummy_graph():
+    """Placeholder graph for molecules whose SMILES fail to parse, keeping indices aligned."""
+    from featurize import FSMOL_NODE_FEAT_DIM
+    from torch_geometric.data import Data
+    return Data(
+        x=torch.zeros((1, FSMOL_NODE_FEAT_DIM), dtype=torch.float),
+        edge_index=torch.zeros((2, 0), dtype=torch.long),
+        edge_attr=torch.zeros((0, 3), dtype=torch.float),
+        ecfp=torch.zeros((1, 2048), dtype=torch.float),
+        descriptors=torch.zeros((1, 42), dtype=torch.float),
+    )
+
+
+def _smiles_to_batch(smiles_list: list[str], device: torch.device):
+    """Convert a list of SMILES to a PyG Batch on device (FS-Mol featurisation)."""
+    from featurize import smiles_to_fsmol_graph
+    from torch_geometric.data import Batch as PyGBatch
+    dummy = _fsmol_dummy_graph()
+    graphs = [smiles_to_fsmol_graph(smi) or dummy for smi in smiles_list]
     return PyGBatch.from_data_list(graphs).to(device)
 
 
-def _gnn_predict_chunked(
-    model, ctx_emb: torch.Tensor, ctx_lbl: torch.Tensor,
-    query_smiles: list[str], device: torch.device,
-    chunk_size: int = 1024,
-    fsmol_style: bool = False,
-) -> np.ndarray:
-    """
-    Run prediction over query_smiles in chunks to avoid GPU OOM.
-    ctx_emb must be pre-encoded by the caller (encode support once, not per chunk).
-    """
-    m = _unwrap(model)
-    all_preds: list[np.ndarray] = []
-    for start in range(0, len(query_smiles), chunk_size):
-        chunk_smiles = query_smiles[start : start + chunk_size]
-        chunk_batch  = _smiles_to_batch(chunk_smiles, device, fsmol_style=fsmol_style)
-        qry_emb      = m.encoder(chunk_batch)
-        preds        = m.predict_from_embeddings(ctx_emb, ctx_lbl, qry_emb)
-        all_preds.append(preds.cpu().numpy())
-    return np.concatenate(all_preds) if all_preds else np.array([])
-
-
-def _featurize_smiles_list(smiles_list: list[str], fsmol: bool) -> list:
+def _featurize_smiles_list(smiles_list: list[str]) -> list:
     """Featurize SMILES → PyG Data objects (CPU). Pre-compute once per dataset to amortize RDKit cost."""
-    from torch_geometric.data import Data
-    if fsmol:
-        from featurize import smiles_to_fsmol_graph, FSMOL_NODE_FEAT_DIM
-        dummy = Data(
-            x=torch.zeros((1, FSMOL_NODE_FEAT_DIM), dtype=torch.float),
-            edge_index=torch.zeros((2, 0), dtype=torch.long),
-            edge_attr=torch.zeros((0, 3), dtype=torch.float),
-            ecfp=torch.zeros((1, 2048), dtype=torch.float),
-            descriptors=torch.zeros((1, 42), dtype=torch.float),
-        )
-        return [smiles_to_fsmol_graph(smi) or dummy for smi in smiles_list]
-    else:
-        from featurize import smiles_to_graph, NODE_FEAT_DIM, EDGE_FEAT_DIM
-        dummy = Data(
-            x=torch.zeros((1, NODE_FEAT_DIM), dtype=torch.float),
-            edge_index=torch.zeros((2, 0), dtype=torch.long),
-            edge_attr=torch.zeros((0, EDGE_FEAT_DIM), dtype=torch.float),
-        )
-        return [smiles_to_graph(smi) or dummy for smi in smiles_list]
+    from featurize import smiles_to_fsmol_graph
+    dummy = _fsmol_dummy_graph()
+    return [smiles_to_fsmol_graph(smi) or dummy for smi in smiles_list]
 
 
 def _encode_smiles_chunked(
-    model, smiles_list: list[str], device: torch.device,
-    fsmol: bool, chunk_size: int = 2048,
+    model, smiles_list: list[str], device: torch.device, chunk_size: int = 2048,
 ) -> torch.Tensor:
     """Encode all SMILES to embeddings in chunks. Returns (n, emb_dim) on device."""
     m = _unwrap(model)
@@ -314,7 +143,7 @@ def _encode_smiles_chunked(
         return torch.zeros((0,), device=device)
     parts = []
     for start in range(0, len(smiles_list), chunk_size):
-        batch = _smiles_to_batch(smiles_list[start:start + chunk_size], device, fsmol_style=fsmol)
+        batch = _smiles_to_batch(smiles_list[start:start + chunk_size], device)
         parts.append(m.encoder(batch))
     return torch.cat(parts, dim=0)
 
@@ -337,7 +166,6 @@ def evaluate_drugood_multiscale(
     """
     model.eval()
     gnn             = _is_gnn(model)
-    fsmol           = _is_fsmol_gnn(model)
     is_classif      = isinstance(_unwrap(model), PrototypicalNetworkClassification)
     rows = []
 
@@ -350,12 +178,12 @@ def evaluate_drugood_multiscale(
             # ------------------------------------------------------------------
             if gnn:
                 from torch_geometric.data import Batch as PyGBatch
-                ctx_graphs_cache = _featurize_smiles_list(eval_dataset.context_smiles, fsmol)
+                ctx_graphs_cache = _featurize_smiles_list(eval_dataset.context_smiles)
                 qry_emb_cache = {
                     "ood_test": _encode_smiles_chunked(
-                        model, eval_dataset.ood_test_smiles, device, fsmol),
+                        model, eval_dataset.ood_test_smiles, device),
                     "iid_test": _encode_smiles_chunked(
-                        model, eval_dataset.iid_test_smiles, device, fsmol),
+                        model, eval_dataset.iid_test_smiles, device),
                 }
 
             for context_size in context_sizes:
@@ -381,8 +209,11 @@ def evaluate_drugood_multiscale(
                             # regression or when binary labels are unavailable.
                             if is_classif and eval_dataset.context_binary is not None:
                                 from data import stratified_context_indices
+                                # balanced=True: 50/50 active/inactive context so the
+                                # inactive prototype is not built from ~1 molecule
+                                #.
                                 idx = stratified_context_indices(
-                                    eval_dataset.context_binary, n_ctx, rng)
+                                    eval_dataset.context_binary, n_ctx, rng, balanced=True)
                             else:
                                 idx = rng.choice(
                                     len(eval_dataset.context_smiles), size=n_ctx, replace=False)
@@ -431,6 +262,8 @@ def evaluate_drugood_multiscale(
                         "n_seeds":           len(seed_metrics),
                         "delta_auprc":       mean_m["delta_auprc"],
                         "delta_auprc_std":   std_m["delta_auprc"],
+                        "auroc":             mean_m.get("auroc", float("nan")),
+                        "auroc_std":         std_m.get("auroc", float("nan")),
                         "rmse":              mean_m["rmse"],
                         "rmse_std":          std_m["rmse"],
                         "mae":               mean_m["mae"],
@@ -441,8 +274,9 @@ def evaluate_drugood_multiscale(
 
                     print(
                         f"{eval_dataset.split_type:35s} | ctx={context_size:4d} | "
-                        f"{query_set:8s} | dAUPRC: {mean_m['delta_auprc']:+.4f}+/-{std_m['delta_auprc']:.4f} | "
-                        f"RMSE: {mean_m['rmse']:.4f} | Spearman: {mean_m['spearman']:.4f}"
+                        f"{query_set:8s} | AUROC: {mean_m.get('auroc', float('nan')):.4f} | "
+                        f"dAUPRC: {mean_m['delta_auprc']:+.4f}+/-{std_m['delta_auprc']:.4f} "
+                        f"(base rate active shown in n_test) | RMSE: {mean_m['rmse']:.4f}"
                     )
 
     df = pd.DataFrame(rows).reset_index(drop=True)
@@ -461,7 +295,7 @@ def _build_encoder_from_config(config: dict, device: torch.device) -> torch.nn.M
     deg_list      = config.get("deg", None)
     deg           = torch.tensor(deg_list, dtype=torch.long) if deg_list is not None else None
 
-    if encoder_type == "fsmol_gnn":
+    if encoder_type == "gnn":
         from featurize import FSMOL_NODE_FEAT_DIM
         encoder = FSMolGNNEncoder(
             node_feat_dim=FSMOL_NODE_FEAT_DIM,
@@ -470,17 +304,7 @@ def _build_encoder_from_config(config: dict, device: torch.device) -> torch.nn.M
             embedding_dim=embedding_dim,
             deg=deg,
         )
-    elif encoder_type == "gnn":
-        from featurize import NODE_FEAT_DIM, EDGE_FEAT_DIM
-        encoder = PNAGNNEncoder(
-            node_feat_dim=NODE_FEAT_DIM,
-            edge_feat_dim=EDGE_FEAT_DIM,
-            hidden_channels=config.get("hidden_channels", 128),
-            num_layers=config.get("num_layers", 6),
-            embedding_dim=embedding_dim,
-            deg=deg,
-        )
-    else:  # ecfp (default - handles old checkpoints without encoder_type key)
+    else:  # ecfp (default)
         encoder = ECFPEncoder(
             input_dim=2048,
             hidden_dim=config.get("hidden_dim", 512),
@@ -516,145 +340,17 @@ def _load_model_from_checkpoint(
     return model, config
 
 
-def load_and_evaluate(
-    checkpoint_path: str,
-    eval_datasets: list[DrugOODEvalDataset],
-    context_sizes: list[int] = [64, 128, 256, 512],
-    seeds: list[int] = [42, 123, 456],
-) -> pd.DataFrame:
-    """
-    Load pretrained model from checkpoint and run multi-scale DrugOOD evaluation.
-    Returns long-form DataFrame. Caller (main.py) is responsible for saving with run_tag.
-    Supports both regression and classification checkpoints.
-    """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, _ = _load_model_from_checkpoint(checkpoint_path, device)
-    return evaluate_drugood_multiscale(model, eval_datasets, device, context_sizes, seeds)
-
-
-# =============================================================================
-# INSIDE-TASK OOD EVALUATION (FS-Mol test assays)
-# =============================================================================
-
-def evaluate_inside_task_ood(
-    model: torch.nn.Module,
-    test_assays: list[AssayDataset],
-    device: torch.device,
-    n_support: int = 16,
-    n_episodes_per_assay: int = 10,
-    seed: int = 42,
-    use_ttpa: bool = False,
-) -> pd.DataFrame:
-    """
-    Inside-task OOD evaluation on FS-Mol test assays.
-
-    For each assay that has >= 2 scaffold groups:
-      - Support set: n_support molecules sampled from scaffold group A
-      - Query set:   n_query molecules sampled from scaffold group B (different scaffold)
-    This tests whether the model can predict activity across scaffold families
-    within a single bioactivity task - the within-task OOD scenario.
-
-    Assays with only 1 scaffold group are skipped (no scaffold split possible).
-
-    Returns a DataFrame with one row per assay:
-        assay_id | n_scaffold_groups | n_molecules | spearman | rmse | mae | delta_auprc
-    """
-    model.eval()
-    is_classif  = isinstance(_unwrap(model), PrototypicalNetworkClassification)
-    gnn         = _is_gnn(model)
-    fsmol       = _is_fsmol_gnn(model)
-    rng  = np.random.RandomState(seed)
-    rows = []
-
-    n_skipped = 0
-    with torch.no_grad():
-        for assay in test_assays:
-            groups = list(assay.scaffold_groups.keys())
-            if len(groups) < 2:
-                n_skipped += 1
-                continue
-
-            episode_metrics: list[dict] = []
-            # Only consider scaffold groups with >= 3 molecules as query candidates.
-            # Groups of 1-2 have no rank variance → Spearman undefined.
-            valid_query_groups = [g for g in groups if len(assay.scaffold_groups[g]) >= 3]
-            if len(valid_query_groups) == 0:
-                n_skipped += 1
-                continue
-
-            # Encode all molecules in this assay once; slice per episode (no repeated GNN passes)
-            all_emb = _encode_assay(model, assay, device, gnn, fsmol)
-
-            for _ in range(n_episodes_per_assay):
-                # Support: any scaffold group; query: only groups with ≥3 molecules
-                sup_key = groups[rng.randint(len(groups))]
-                qry_key = valid_query_groups[rng.randint(len(valid_query_groups))]
-                # Ensure support and query come from different groups
-                if sup_key == qry_key and len(valid_query_groups) > 1:
-                    remaining = [g for g in valid_query_groups if g != sup_key]
-                    qry_key = remaining[rng.randint(len(remaining))]
-
-                sup_pool = assay.scaffold_groups[sup_key]
-                qry_pool = assay.scaffold_groups[qry_key]
-
-                sup_idx = rng.choice(sup_pool, size=n_support, replace=len(sup_pool) < n_support)
-                qry_idx = np.array(qry_pool)
-
-                if is_classif and assay.binary_labels is not None:
-                    sup_lbl = torch.tensor(
-                        assay.binary_labels[sup_idx].astype(np.float32), device=device)
-                else:
-                    sup_lbl = torch.tensor(assay.labels[sup_idx], device=device)
-                qry_lbl = assay.labels[qry_idx]
-
-                if use_ttpa and is_classif:
-                    preds = _predict_ttpa(
-                        all_emb[sup_idx], sup_lbl, all_emb[qry_idx],
-                        _get_fps(assay, sup_idx), _get_fps(assay, qry_idx),
-                    ).cpu().numpy()
-                else:
-                    preds = _unwrap(model).predict_from_embeddings(
-                        all_emb[sup_idx], sup_lbl, all_emb[qry_idx]
-                    ).cpu().numpy()
-
-                bin_lbl = assay.binary_labels[qry_idx] if assay.binary_labels is not None else None
-                episode_metrics.append(_compute_metrics(preds, qry_lbl, bin_lbl, is_classif))
-
-            with np.errstate(all='ignore'):
-                mean_m = {k: float(np.nanmean([m[k] for m in episode_metrics])) for k in episode_metrics[0]}
-            rows.append({
-                "assay_id":          assay.assay_id,
-                "n_scaffold_groups": len(groups),
-                "n_molecules":       len(assay),
-                **mean_m,
-            })
-
-    df = pd.DataFrame(rows).reset_index(drop=True)
-    n_valid_sp = int(df["spearman"].notna().sum())
-    print(f"\nInside-task OOD: {len(df)} assays evaluated, {n_skipped} skipped (no scaffold group with ≥3 molecules).")
-    print(f"  Mean Spearman : {df['spearman'].mean(skipna=True):.4f}  ({n_valid_sp}/{len(df)} assays non-nan)")
-    print(f"  Mean RMSE     : {df['rmse'].mean(skipna=True):.4f}")
-    print(f"  Mean ΔAUPRC   : {df['delta_auprc'].mean(skipna=True):.4f}")
-    return df
-
-
-# =============================================================================
-# FS-MOL TEST EVALUATION  -  3-curve line plot (Fig 2a / Fig 2b)
-# =============================================================================
-
 def _encode_assay(
-    model, assay: AssayDataset, device: torch.device, gnn: bool, fsmol: bool
+    model, assay: AssayDataset, device: torch.device, gnn: bool
 ) -> torch.Tensor:
     """Pre-encode every molecule in an assay. Returns (n, emb_dim) on device.
     Call once per assay; slice embeddings per episode - eliminates repeated GNN passes."""
-    from data import _build_fsmol_graphs_for_assay, _build_graphs_for_assay
     m = _unwrap(model)
     with torch.no_grad():
         if gnn:
+            from data import _build_fsmol_graphs_for_assay
             from torch_geometric.data import Batch as PyGBatch
-            graphs = (_build_fsmol_graphs_for_assay(assay) if fsmol
-                      else _build_graphs_for_assay(assay))
-            batch = PyGBatch.from_data_list(graphs).to(device)
+            batch = PyGBatch.from_data_list(_build_fsmol_graphs_for_assay(assay)).to(device)
             return m.encoder(batch)   # (n, emb_dim)
         else:
             fp = torch.tensor(np.stack(assay.fingerprints), dtype=torch.float32).to(device)
@@ -674,181 +370,283 @@ def _get_mol_sizes(assay: AssayDataset) -> np.ndarray:
     return np.array(sizes, dtype=np.int32)
 
 
-def evaluate_fsmol_test(
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.gaussian_process import GaussianProcessClassifier
+from sklearn.gaussian_process.kernels import Kernel as _SKKernel
+
+_RF_PARAMS = dict(n_estimators=100, max_depth=10, max_features="sqrt",
+                  min_samples_leaf=2, n_jobs=-1, random_state=0)
+
+
+class _TanimotoKernel(_SKKernel):
+    """
+    Tanimoto similarity kernel for binary ECFP fingerprints.
+
+    k(x, y) = |x ∩ y| / |x ∪ y|  (generalised to count vectors via dot-product form)
+
+    No hyperparameters — the kernel encodes the fixed domain-appropriate similarity
+    for molecular fingerprints. Passed to GaussianProcessClassifier with optimizer=None
+    so sklearn skips log-marginal-likelihood optimisation.
+    """
+
+    @property
+    def hyperparameters(self):
+        return []
+
+    @property
+    def theta(self):
+        return np.empty(0)
+
+    @theta.setter
+    def theta(self, theta):
+        pass
+
+    @property
+    def bounds(self):
+        return np.empty((0, 2))
+
+    def __call__(self, X, Y=None, eval_gradient=False):
+        X = np.asarray(X, dtype=np.float64)
+        Y = X if Y is None else np.asarray(Y, dtype=np.float64)
+        Xb = (X > 0).astype(np.float64)
+        Yb = (Y > 0).astype(np.float64)
+        inter = Xb @ Yb.T
+        K = inter / np.maximum(Xb.sum(1, keepdims=True) + Yb.sum(1, keepdims=True).T - inter, 1e-8)
+        if eval_gradient:
+            return K, np.zeros((*K.shape, 0))
+        return K
+
+    def diag(self, X):
+        return np.ones(X.shape[0])
+
+    def is_stationary(self):
+        return False
+
+    def clone_with_theta(self, theta):
+        return _TanimotoKernel()
+
+    def get_params(self, deep=True):
+        return {}
+
+
+def _h_proto_euclidean(Xs, ys, Xq):
+    """Mean-prototype + squared-Euclidean (the distance ProtoNet trains with)."""
+    pa, pi = Xs[ys == 1].mean(0), Xs[ys == 0].mean(0)
+    da = ((Xq - pa) ** 2).sum(1)
+    di = ((Xq - pi) ** 2).sum(1)
+    return 1.0 / (1.0 + np.exp(np.clip(da - di, -30, 30)))
+
+
+def _h_proto_mahalanobis(Xs, ys, Xq):
+    """Mean-prototype + FS-Mol shrinkage Mahalanobis (the paper's eval head)."""
+    sup = torch.tensor(np.asarray(Xs), dtype=torch.float32)
+    qry = torch.tensor(np.asarray(Xq), dtype=torch.float32)
+    active = torch.tensor(ys.astype(bool))
+    protos = torch.stack([sup[active].mean(0), sup[~active].mean(0)], dim=0)
+    dists = _mahalanobis_dists(qry, protos, sup, active)
+    return torch.softmax(-dists, dim=1)[:, 0].numpy()
+
+
+def _h_sklearn(clf, Xs, ys, Xq):
+    clf.fit(Xs, ys)
+    classes = list(clf.classes_)
+    if 1 not in classes:
+        return np.zeros(len(Xq), dtype=np.float32)
+    return clf.predict_proba(Xq)[:, classes.index(1)]
+
+
+def _h_logreg(Xs, ys, Xq):
+    return _h_sklearn(make_pipeline(StandardScaler(),
+                                    LogisticRegression(max_iter=1000, C=1.0)), Xs, ys, Xq)
+
+
+def _h_knn(Xs, ys, Xq, k=5):
+    kk = max(1, min(k, len(ys) - 1))
+    return _h_sklearn(make_pipeline(StandardScaler(),
+                                    KNeighborsClassifier(n_neighbors=kk)), Xs, ys, Xq)
+
+
+def _h_rf(Xs, ys, Xq):
+    return _h_sklearn(RandomForestClassifier(**_RF_PARAMS), Xs, ys, Xq)
+
+
+def _h_proto_tanimoto(Xs, ys, Xq):
+    """
+    Tanimoto-kernel prototype classifier.
+
+    For each query molecule q, scores its mean Tanimoto similarity to the active
+    support molecules vs the inactive support molecules, then converts to a probability
+    via softmax over the two class similarities.
+
+    Motivation: Tanimoto is the canonical distance for ECFP fingerprints; mean-prototype
+    with Euclidean distance (_h_proto_euclidean) treats bit vectors as Cartesian points,
+    which has no geometric justification. This head uses the domain-appropriate geometry.
+    """
+    Xs = np.asarray(Xs, dtype=np.float64)
+    Xq = np.asarray(Xq, dtype=np.float64)
+    ys = np.asarray(ys)
+    Xsb = (Xs > 0).astype(np.float64)
+    Xqb = (Xq > 0).astype(np.float64)
+    inter = Xqb @ Xsb.T                                  # (nq, ns)
+    T = inter / np.maximum(
+        Xqb.sum(1, keepdims=True) + Xsb.sum(1, keepdims=True).T - inter, 1e-8
+    )                                                     # (nq, ns) Tanimoto matrix
+    sim_a = T[:, ys == 1].mean(1)                        # mean similarity to actives
+    sim_i = T[:, ys == 0].mean(1)                        # mean similarity to inactives
+    denom  = np.maximum(sim_a + sim_i, 1e-8)
+    return sim_a / denom                                  # P(active) in [0, 1]
+
+
+def _h_gp_tanimoto(Xs, ys, Xq):
+    """
+    Gaussian process classifier with Tanimoto kernel on ECFP fingerprints.
+
+    Fits a GPC (Laplace approximation) on the support set using the Tanimoto similarity
+    kernel — the domain-canonical kernel for molecular fingerprints. No hyperparameter
+    optimisation (optimizer=None): the kernel has no free parameters by design.
+
+    Motivation: the Tanimoto-kernel GP is the optimal kernel machine for molecular
+    fingerprints. It directly generalises the Tanimoto prototype (_h_proto_tanimoto):
+    where the prototype uses a single class mean as the basis, the GP uses every support
+    molecule as a kernel basis function. If the GP beats ProtoNet, that validates using
+    the right kernel; if ProtoNet beats the GP, that validates the learned representation.
+    """
+    gpc = GaussianProcessClassifier(kernel=_TanimotoKernel(), optimizer=None,
+                                    random_state=0)
+    gpc.fit(Xs, ys)
+    classes = list(gpc.classes_)
+    if 1 not in classes:
+        return np.zeros(len(Xq), dtype=np.float32)
+    return gpc.predict_proba(Xq)[:, classes.index(1)]
+
+
+# head -> (callable, representation "embedding"|"ecfp")
+FSMOL_HEAD_REGISTRY = {
+    # ── Embedding heads (use trained encoder output) ──────────────────────────
+    "emb_proto_euclid":      (_h_proto_euclidean,   "embedding"),
+    "emb_proto_mahalanobis": (_h_proto_mahalanobis, "embedding"),
+    "emb_logreg":            (_h_logreg,            "embedding"),
+    "emb_knn":               (_h_knn,               "embedding"),
+    # ── ECFP heads (model-free, raw 2048-bit fingerprints) ───────────────────
+    # Geometry ablation: Euclidean (ad hoc) → Tanimoto (domain-canonical) → GP
+    "ecfp_proto_euclid":     (_h_proto_euclidean,   "ecfp"),
+    "ecfp_proto_tanimoto":   (_h_proto_tanimoto,    "ecfp"),
+    "ecfp_gp_tanimoto":      (_h_gp_tanimoto,       "ecfp"),
+    "ecfp_logreg":           (_h_logreg,            "ecfp"),
+    "ecfp_rf":               (_h_rf,                "ecfp"),
+}
+
+
+def _butina_groups_for(assay: AssayDataset) -> dict:
+    """Butina@0.70 fingerprint-similarity groups for the 'similarity' eval split.
+    Fixed cutoff: config.SCAFFOLD_OOD_CUTOFF = 0.70."""
+    from config import SCAFFOLD_OOD_CUTOFF
+    from data import build_butina_groups
+    return build_butina_groups(assay.fingerprints, SCAFFOLD_OOD_CUTOFF)
+
+
+def _mean_max_tanimoto(Fs: np.ndarray, Fq: np.ndarray) -> float:
+    """Mean over query molecules of the nearest-support Tanimoto (OOD-severity probe)."""
+    s = (Fs > 0).astype(np.float32)
+    q = (Fq > 0).astype(np.float32)
+    inter = q @ s.T
+    tani = inter / (q.sum(1, keepdims=True) + s.sum(1, keepdims=True).T - inter + 1e-8)
+    return float(tani.max(1).mean())
+
+
+def evaluate_fsmol_test_grid(
     model: torch.nn.Module,
     test_assays,
     device: torch.device,
-    support_sizes: list[int] = [16, 64, 128, 256],
+    splits=("random", "scaffold", "similarity", "size"),
+    support_sizes=(16, 32, 64, 128, 256, 512),
     n_repeats: int = 5,
-    seed: int = 42,
-    split_type: str = "random",   # "random" | "scaffold" | "size"
-    save_preds_path: str | None = None,
-    use_ttpa: bool = False,       # Test-Time Prototype Adaptation (Tanimoto-weighted prototypes)
+    base_seed: int = 42,
+    head_names=None,
 ) -> pd.DataFrame:
     """
-    FS-Mol test evaluation with support-size sweep - produces one curve in Fig 2a.
-    Call three times (split_type = "random", "scaffold", "size") for the full figure.
+    Canonical FS-Mol test evaluator: representation × head on shared fair splits.
 
-    Split types:
-        "random"   - IID baseline: support and query both drawn randomly from assay.
-        "scaffold" - inside-task scaffold OOD: support drawn from one Murcko scaffold
-                     group; query = all molecules in every other scaffold group.
-        "size"     - size shift: support drawn from small molecules (bottom 50% by
-                     heavy atom count); query = all large molecules (top 50%).
+    Returns one row per (assay, split, support_size, repeat, head):
+        assay_id | split_type | support_size | support_actual | n_query |
+        repeat | representation | head | delta_auprc | auroc | query_support_sim
 
-    For each (assay, support_size), n_repeats episodes are run with different random
-    support draws; metrics are nanmean'd across repeats.
-
-    Note: at large support sizes fewer assays qualify (need n_total > n_sup).
-    The returned DataFrame includes an n_assays column per support_size so this
-    is transparent in reported results - do not filter post-hoc.
-
-    Returns one row per (assay × support_size):
-        assay_id | split_type | support_size | n_total | n_query
-                 | delta_auprc | rmse | mae | spearman
+    split_type values:
+        "random"     — support drawn uniformly at random
+        "scaffold"   — Murcko scaffold group-disjoint (assay.scaffold_groups, built at load)
+        "similarity" — Butina@0.70 fingerprint-cluster-disjoint (config.SCAFFOLD_OOD_CUTOFF)
+        "size"       — support from smallest molecules, query from largest
     """
-    MIN_TASK_SIZE = 32   # must match main.py - skip assays too small after exact-filtering
-    min_grp = max(2, min(support_sizes) // 4)  # scaffold split: min molecules per group
+    from config import SCAFFOLD_OOD_CUTOFF as _EVAL_CUTOFF
+    from data import build_fair_split_indices
+    if head_names is None:
+        head_names = list(FSMOL_HEAD_REGISTRY.keys())
+    need_emb = any(FSMOL_HEAD_REGISTRY[h][1] == "embedding" for h in head_names)
+    gnn = False
+    if need_emb:
+        if model is None:
+            raise ValueError("emb heads requested but model is None.")
+        gnn = _is_gnn(model)
+    need_sizes      = "size"       in splits
+    need_similarity = "similarity" in splits
+    # Seed hash per split type — kept stable so results are reproducible across runs.
+    _SI = {"random": 1, "scaffold": 2, "similarity": 3, "size": 4}
+    rows = []
 
-    model.eval()
-    is_classif = isinstance(_unwrap(model), PrototypicalNetworkClassification)
-    gnn        = _is_gnn(model)
-    fsmol      = _is_fsmol_gnn(model)
-    rng       = np.random.RandomState(seed)
-    rows:      list[dict] = []
-    pred_rows: list[dict] = []
-    save_preds = save_preds_path is not None
-
-    for file_idx, assay in enumerate(test_assays):
-        n_total = len(assay)
-
-        if n_total < MIN_TASK_SIZE:
+    for ai, assay in enumerate(test_assays):
+        if assay.binary_labels is None:
             continue
+        n_total   = len(assay)
+        y_all     = np.asarray(assay.binary_labels)
+        E_all     = (_encode_assay(model, assay, device, gnn).detach().cpu().numpy()
+                     if need_emb else None)
+        F_all     = np.stack(assay.fingerprints).astype(np.float32)
+        mol_sizes = _get_mol_sizes(assay) if need_sizes else None
+        # Murcko groups built at load time (zero cost); Butina built once per assay if needed.
+        murcko_groups  = assay.scaffold_groups
+        butina_groups  = _butina_groups_for(assay) if need_similarity else None
 
-        # Encode every molecule in this assay once; slice embeddings per episode.
-        # Eliminates repeated GNN passes: 1 forward pass per assay instead of
-        # len(support_sizes) × n_repeats × 2 (support + query).
-        all_emb = _encode_assay(model, assay, device, gnn, fsmol)
+        for split in splits:
+            # Map split name → (groups_dict, split_type_for_build_fair_split_indices)
+            # "scaffold" and "similarity" both use the group-disjoint protocol ("scaffold")
+            # in build_fair_split_indices; they differ only in which groups are supplied.
+            if split == "scaffold":
+                groups, bfsi_split = murcko_groups, "scaffold"
+            elif split == "similarity":
+                groups, bfsi_split = butina_groups, "scaffold"
+            else:
+                groups, bfsi_split = murcko_groups, split   # "random" / "size" ignore groups
 
-        # Pre-compute per-assay structures for non-random splits
-        usable_groups: list[str] = []
-        small_pool = large_pool = np.array([], dtype=np.int64)
-
-        if split_type == "scaffold":
-            usable_groups = [k for k, v in assay.scaffold_groups.items()
-                             if len(v) >= min_grp]
-            if len(usable_groups) < 2:
-                continue  # not enough scaffold diversity - skip assay entirely
-
-        elif split_type == "size":
-            mol_sizes  = _get_mol_sizes(assay)
-            sorted_idx = np.argsort(mol_sizes)
-            mid        = n_total // 2
-            small_pool = sorted_idx[:mid]
-            large_pool = sorted_idx[mid:]
-            if len(small_pool) < 1 or len(large_pool) == 0:
-                continue
-
-        for n_sup in support_sizes:
-            if n_total <= n_sup:
-                continue
-
-            repeat_metrics: list[dict] = []
-            last_qry_idx = np.array([], dtype=np.int64)
-
-            for rep_i in range(n_repeats):
-
-                # ── Build support / query indices ────────────────────────────
-                if split_type == "random":
-                    sup_idx = rng.choice(n_total, size=n_sup, replace=False)
-                    sup_set = set(sup_idx.tolist())
-                    qry_idx = np.array([j for j in range(n_total) if j not in sup_set])
-
-                elif split_type == "scaffold":
-                    sup_key  = usable_groups[rng.randint(len(usable_groups))]
-                    sup_pool = assay.scaffold_groups[sup_key]
-                    qry_idx  = np.array([
-                        i for k in assay.scaffold_groups if k != sup_key
-                        for i in assay.scaffold_groups[k]
-                    ])
-                    if len(qry_idx) == 0:
+            for n_sup in support_sizes:
+                for rep in range(n_repeats):
+                    rng = np.random.RandomState(
+                        base_seed + 1009 * rep + 7919 * n_sup + 10000 * _SI.get(split, 0))
+                    sp = build_fair_split_indices(
+                        n_total, groups, y_all, n_sup, bfsi_split, rng,
+                        mol_sizes=mol_sizes, require_both_classes=True)
+                    if sp is None:
                         continue
-                    sup_idx = rng.choice(sup_pool, size=n_sup,
-                                         replace=len(sup_pool) < n_sup)
-
-                elif split_type == "size":
-                    sup_idx = rng.choice(small_pool, size=n_sup,
-                                         replace=len(small_pool) < n_sup)
-                    qry_idx = large_pool
-
-                # ── Predict via pre-encoded embeddings (no GNN re-pass) ──────
-                if is_classif and assay.binary_labels is not None:
-                    sup_lbl = torch.tensor(
-                        assay.binary_labels[sup_idx].astype(np.float32), device=device)
-                else:
-                    sup_lbl = torch.tensor(assay.labels[sup_idx], device=device)
-                qry_lbl = assay.labels[qry_idx]
-                bin_lbl = (assay.binary_labels[qry_idx]
-                           if assay.binary_labels is not None else None)
-
-                if use_ttpa and is_classif:
-                    preds = _predict_ttpa(
-                        all_emb[sup_idx], sup_lbl, all_emb[qry_idx],
-                        _get_fps(assay, sup_idx), _get_fps(assay, qry_idx),
-                    ).cpu().numpy()
-                else:
-                    preds = _unwrap(model).predict_from_embeddings(
-                        all_emb[sup_idx], sup_lbl, all_emb[qry_idx]
-                    ).cpu().numpy()
-
-                repeat_metrics.append(_compute_metrics(preds, qry_lbl, bin_lbl, is_classif))
-                last_qry_idx = qry_idx
-
-                if save_preds:
-                    for mol_i, (p, t) in enumerate(zip(preds, qry_lbl)):
-                        pred_rows.append({
-                            "assay_id":     assay.assay_id,
-                            "split_type":   split_type,
-                            "support_size": n_sup,
-                            "repeat":       rep_i,
-                            "mol_idx":      int(qry_idx[mol_i]),
-                            "pred":         float(p),
-                            "target":       float(t),
-                            "binary_label": int(bin_lbl[mol_i]) if bin_lbl is not None else -1,
+                    s_idx, q_idx = sp
+                    if len(np.unique(y_all[q_idx])) < 2:
+                        continue
+                    ys, yq = y_all[s_idx], y_all[q_idx]
+                    qsim = _mean_max_tanimoto(F_all[s_idx], F_all[q_idx])
+                    for head in head_names:
+                        fn, rep_repr = FSMOL_HEAD_REGISTRY[head]
+                        p = (fn(F_all[s_idx], ys, F_all[q_idx]) if rep_repr == "ecfp"
+                             else fn(E_all[s_idx], ys, E_all[q_idx]))
+                        rows.append({
+                            "assay_id": assay.assay_id, "split_type": split,
+                            "support_size": n_sup, "support_actual": int(len(s_idx)),
+                            "n_query": int(len(q_idx)), "repeat": rep,
+                            "representation": rep_repr, "head": head,
+                            "delta_auprc": delta_auprc(p, yq), "auroc": auroc(p, yq),
+                            "query_support_sim": qsim,
                         })
-
-            if not repeat_metrics:
-                continue
-
-            with np.errstate(all='ignore'):  # suppress nanmean-of-all-NaN warning
-                mean_m = {k: float(np.nanmean([m[k] for m in repeat_metrics]))
-                          for k in repeat_metrics[0]}
-            rows.append({
-                "assay_id":     assay.assay_id,
-                "split_type":   split_type,
-                "support_size": n_sup,
-                "n_total":      n_total,
-                "n_query":      int(len(last_qry_idx)),
-                **mean_m,
-            })
-
-        if (file_idx + 1) % 20 == 0:
-            print(f"  [{split_type}] {file_idx + 1}/{len(test_assays)} assays...",
-                  end="\r")
-
-    df = pd.DataFrame(rows)
-    if df.empty:
-        print(f"\n  No rows for split_type='{split_type}' - check assay sizes / scaffold diversity.")
-        return df
-
-    n_assays = df["assay_id"].nunique()
-    print(f"\n  Done [{split_type}]. {n_assays} assays × {len(support_sizes)} support sizes.")
-    print(f"\n=== FS-Mol Test [{split_type}]: mean metrics per support size ===")
-    print(df.groupby("support_size")[["delta_auprc", "spearman", "rmse"]].mean().round(4))
-
-    if save_preds and pred_rows:
-        pred_df = pd.DataFrame(pred_rows)
-        pred_df.to_csv(save_preds_path, index=False)
-        print(f"  Predictions saved → {save_preds_path}  ({len(pred_df):,} rows)")
-
-    return df
+        if (ai + 1) % 20 == 0:
+            print(f"  eval {ai + 1}/{len(test_assays)} assays...", flush=True)
+    return pd.DataFrame(rows)

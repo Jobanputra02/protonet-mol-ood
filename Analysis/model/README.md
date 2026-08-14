@@ -6,15 +6,15 @@ Scripts that evaluate trained checkpoints and produce figures. All read paths fr
 
 A model here is a **(representation × head)** pair:
 
-- **Representation** - either raw ECFP fingerprints, or a frozen encoder's embedding. The trainable encoders (`ECFPEncoder`, `PNAGNNEncoder`, `FSMolGNNEncoder`) and the ProtoNet heads live in [`../../model.py`](../../model.py) and are produced by [`../../train.py`](../../train.py).
-- **Head** - everything fit *fresh per task* (no meta-training) is defined inside `baseline_grid.py`, one signature `head(Xs, ys, Xq) → p_active`: `proto_euclidean`, `proto_mahalanobis`, `logreg`, `knn`, `random_forest`, `kr_tanimoto`, `mean_label`. (`baseline_grid.py` is to these heads what `main.py` is to `model.py` - the runnable pipeline; the heads are its only user, so they live inline.)
+- **Representation** - either raw ECFP fingerprints, or a frozen encoder's embedding. The trainable encoders (`ECFPEncoder`, `FSMolGNNEncoder`) and the ProtoNet heads live in [`../../model.py`](../../model.py) and are produced by [`../../train.py`](../../train.py).
+- **Head** - all 9 heads are defined in `evaluate.py`'s `FSMOL_HEAD_REGISTRY` with signature `head(Xs, ys, Xq) → p_active`. The evaluation grid (representation × head × split × support size) is run by `main.py` and writes one CSV per run.
 
 | Script | What it does |
 |---|---|
-| `baseline_grid.py` | Representation × head on identical splits - writes `baseline_grid.csv` per run |
 | `fixed_assay_curves.py` | Recomputes support-size curves on a *fixed* assay set vs the naive varying-population curve - confirms the n=256/512 drop is assay selection bias, not model failure |
 | `plot_line_grid.py` | **Line plot** - mean ± std ΔAUPRC vs support size; configurable heads, splits, encoder |
 | `plot_boxplot_grid.py` | **Boxplot** - per-assay ΔAUPRC distribution vs support size; same config as line plot |
+| `plot_strip_grid.py` | **Strip plot** - every individual assay as a dot; median tick per group; lets you see outlier tasks and whether a head's advantage is broad or task-specific |
 
 **Run mechanism:** every script has a `# CONFIG` block at the top - edit the variables, run with **no arguments**. No argparse.
 
@@ -27,9 +27,12 @@ ENCODER        = "fsmol_gnn"   # "ecfp" | "fsmol_gnn"
 TRAINING_SPLIT = "random"      # "random" | "shift_aware"
 SEEDS          = [0, 1, 2]     # which seeds to average over
 
-ECFP_HEADS = ["ecfp_rf", "ecfp_logreg", "ecfp_proto_euclid"]
+# Scaffold split is Butina@0.70 — fixed design choice (config.SCAFFOLD_OOD_CUTOFF).
+
+ECFP_HEADS = ["ecfp_proto_euclid", "ecfp_proto_tanimoto", "ecfp_gp_tanimoto",
+              "ecfp_logreg", "ecfp_rf"]
 EMB_HEADS  = ["emb_proto_mahalanobis", "emb_proto_euclid", "emb_logreg", "emb_knn"]
-HEADS = EMB_HEADS              # any subset of the 7 heads - comment out to exclude
+HEADS = EMB_HEADS              # any subset of the 9 heads - comment out to exclude
 
 EVAL_SPLITS = ["random", "scaffold", "size"]  # any subset
 
@@ -47,10 +50,10 @@ ERROR_BARS = "assays"  # "assays" (std across tasks — standard for benchmarks)
 
 ```bash
 # Edit CONFIG block in each script, then:
-python Analysis/model/baseline_grid.py       # writes outputs/results/<run_tag>/baseline_grid.csv
-python Analysis/model/plot_line_grid.py      # writes outputs/figures/<run_tag>/lineplot_*.png
-python Analysis/model/plot_boxplot_grid.py   # writes outputs/figures/<run_tag>/boxplot_*.png
-python Analysis/model/fixed_assay_curves.py  # CONFIG: point CSV at a baseline_grid.csv - prints naive vs fixed-assay-set means side by side
+python Analysis/model/plot_line_grid.py      # writes outputs/{run_tag}/figures/lineplot_*.png
+python Analysis/model/plot_boxplot_grid.py   # writes outputs/{run_tag}/figures/boxplot_*.png
+python Analysis/model/plot_strip_grid.py     # writes outputs/{run_tag}/figures/strip_*.png
+python Analysis/model/fixed_assay_curves.py  # CONFIG: point CSV at a run's fsmol_test_butina_c70.csv
 ```
 
 ### Fixed-assay-set finding
@@ -67,20 +70,25 @@ The naive support-size curves average over different assay populations at each x
 
 The earlier conclusion - *"scaffold-OOD ΔAUPRC has a structural ceiling ~0.05, intrinsic to the mean-prototype mechanism; RF beats ProtoNet"* - was an **evaluation artifact**. The old scaffold split drew support from a *single* scaffold group, sampled *with replacement* (so "n=128" was often ~10 unique molecules), and frequently produced single-class support → flat 0.5 predictions.
 
-With a leakage-free fair split (multiple whole scaffold groups, no duplication, both classes in support - `data.build_fair_split_indices`), on the same GNN checkpoint (`fsmol_gnn_classification_random` seed 0):
+With a leakage-free fair split using Butina@0.70 clustering (`data.build_fair_split_indices`, scaffold split hardcoded in `config.SCAFFOLD_OOD_CUTOFF`), directional results from seed 0 (full 3-seed grid pending):
 
-| Scaffold split, ΔAUPRC | n=16 | n=64 | n=128 | n=256 | n=512 |
-|---|---|---|---|---|---|
-| `emb_proto_euclid` (ProtoNet) | 0.132 | 0.179 | **0.207** | 0.122 | 0.124 |
-| `emb_logreg` (adaptive head) | 0.115 | 0.144 | 0.175 | 0.104 | 0.122 |
-| `ecfp_rf` (per-task RF) | 0.067 | 0.110 | 0.146 | 0.152 | 0.169 |
+| Scaffold split, ΔAUPRC | n=16 | n=64 | n=128 |
+|---|---|---|---|
+| `emb_proto_euclid` (ProtoNet) | 0.132 | 0.179 | **0.207** |
+| `emb_logreg` (adaptive head) | 0.115 | 0.144 | 0.175 |
+| `ecfp_gp_tanimoto` (GP, Tanimoto kernel) | — | — | — |
+| `ecfp_proto_tanimoto` (Tanimoto prototype) | — | — | — |
+| `ecfp_rf` (per-task RF) | 0.067 | 0.110 | 0.146 |
 
-What this says (single seed - confirm on seeds 1–2 + ECFP checkpoints, but the effect size is large):
+(*ecfp_gp_tanimoto and ecfp_proto_tanimoto are new heads — numbers pending the full retrain.*)
+
+What this says (confirm on full 3-seed grid):
 
 1. **No special scaffold collapse.** Scaffold n=128 (0.207) ≈ random n=128 (0.218); the old "4.5× gap" was the artifact.
 2. **Averaging is not the bottleneck** - on the learned embedding the mean-prototype *beats* the adaptive heads at every n.
-3. **The learned embedding is the win** - ProtoNet beats per-task RF at all n ≤ 128 (the regime with 146–154 assays). RF only overtakes at n=256/512, which have just 28 and 11 assays (a known assay-selection effect, present equally on the random split).
+3. **The learned embedding is the win** - ProtoNet beats per-task RF at all n ≤ 128. RF only overtakes at n=256/512 (28 and 11 assays — known assay-selection effect).
 4. **Euclidean ≈ Mahalanobis** at eval - the train/eval distance mismatch is harmless.
+5. **Geometry ablation (ECFP heads)** - `ecfp_proto_tanimoto` tests whether Tanimoto is the right geometry for fingerprint prototypes; `ecfp_gp_tanimoto` tests whether the optimal Tanimoto kernel machine closes the gap to the learned embedding.
 
 The interventions (TTPA, annealing) were designed to close a gap that turns out to be largely artifactual; read their null results in that light.
 

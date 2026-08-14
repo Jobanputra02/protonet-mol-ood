@@ -13,8 +13,8 @@ Runs on test + valid (full scan) and train (sampled, set TRAIN_SAMPLE below).
 Only exact-measurement molecules (Relation == "=") are counted.
 
 Outputs saved to FIGURES_DIR / RESULTS_DIR (from config.py):
-    scaffold_diversity_per_task_all_splits.csv
-    fig_scaffold_diversity_per_task.png
+    scaffold_diversity_per_task_all_splits.csv    - per-assay stats (all numbers; summary printed to stdout)
+    fig_scaffold_distributions.png                - 4-row × 3-col histograms (molecules, scaffolds, diversity ratio, mols/scaffold); x-axes clipped at 99th pct for count metrics
 
 Usage:
     python Analysis/data/scaffold_diversity.py
@@ -40,7 +40,7 @@ os.makedirs(RESULTS_DIR, exist_ok=True)
 
 # ===== CONFIG - edit these, then run (no arguments) =====
 MIN_TASK_SIZE = 32     # assays with fewer exact molecules are skipped
-TRAIN_SAMPLE  = 2000   # train files to sample (None = all ~26k, very slow)
+TRAIN_SAMPLE  = None   # train files to sample (None = all ~26k, very slow)
 # ========================================================
 
 
@@ -86,7 +86,7 @@ def scaffold_diversity_for_split(
         if len(smiles_list) < MIN_TASK_SIZE:
             continue
 
-        scaffolds: set[str] = set()
+        scaffold_counter: dict[str, int] = {}
         for smi in smiles_list:
             mol_obj = Chem.MolFromSmiles(smi)  # type: ignore[attr-defined]
             if mol_obj is None:
@@ -95,18 +95,22 @@ def scaffold_diversity_for_split(
                 sc = MurckoScaffold.MurckoScaffoldSmiles(  # type: ignore[attr-defined]
                     mol=mol_obj, includeChirality=False
                 )
-                scaffolds.add(sc)
+                scaffold_counter[sc] = scaffold_counter.get(sc, 0) + 1
             except Exception:
                 pass
 
-        n_mols = len(smiles_list)
-        n_sc   = len(scaffolds)
+        n_mols       = len(smiles_list)
+        n_sc         = len(scaffold_counter)
+        group_sizes  = list(scaffold_counter.values())
         rows.append({
             "assay_id":                fname.replace(".jsonl.gz", ""),
             "split":                   split_name,
             "n_molecules":             n_mols,
             "n_unique_scaffolds":      n_sc,
             "scaffold_diversity_ratio": n_sc / n_mols if n_mols > 0 else 0.0,
+            "mean_mols_per_scaffold":  np.mean(group_sizes) if group_sizes else 0.0,
+            "median_mols_per_scaffold": np.median(group_sizes) if group_sizes else 0.0,
+            "max_mols_per_scaffold":   max(group_sizes) if group_sizes else 0,
         })
 
     print(f"\n  [{split_name}] Done. {len(rows)} assays processed.")
@@ -114,14 +118,20 @@ def scaffold_diversity_for_split(
 
 
 def print_summary(df: pd.DataFrame, label: str) -> None:
-    d  = df["n_unique_scaffolds"].describe()
-    dr = df["scaffold_diversity_ratio"].describe()
-    print(f"\n  === {label} - scaffold diversity ({len(df)} assays) ===")
-    print(f"  n_unique_scaffolds : mean={d['mean']:.1f}, median={d['50%']:.0f}, "
-          f"min={d['min']:.0f}, max={d['max']:.0f}, std={d['std']:.1f}")
-    print(f"  diversity ratio    : mean={dr['mean']:.3f}, median={dr['50%']:.3f}")
-    print(f"  Tasks with only 1 scaffold       : {(df['n_unique_scaffolds']==1).mean()*100:.1f}%")
-    print(f"  Tasks with diversity ratio > 0.5 : {(df['scaffold_diversity_ratio']>0.5).mean()*100:.1f}%")
+    dm  = df["n_molecules"].describe()
+    ds  = df["n_unique_scaffolds"].describe()
+    dr  = df["scaffold_diversity_ratio"].describe()
+    dg  = df["mean_mols_per_scaffold"].describe()
+    print(f"\n  === {label} ===")
+    print(f"  Assays                  : {len(df):,}")
+    print(f"  Total molecules         : {df['n_molecules'].sum():,}")
+    print(f"  Total unique scaffolds  : {df['n_unique_scaffolds'].sum():,}  (sum across assays; scaffolds shared across assays counted per assay)")
+    print(f"  Molecules / assay       : mean={dm['mean']:.1f}, median={dm['50%']:.0f}, min={dm['min']:.0f}, max={dm['max']:.0f}")
+    print(f"  Unique scaffolds / assay: mean={ds['mean']:.1f}, median={ds['50%']:.0f}, min={ds['min']:.0f}, max={ds['max']:.0f}")
+    print(f"  Diversity ratio         : mean={dr['mean']:.3f}, median={dr['50%']:.3f}")
+    print(f"  Molecules / scaffold    : mean={dg['mean']:.1f}, median={df['median_mols_per_scaffold'].median():.1f}, max(per-assay max)={df['max_mols_per_scaffold'].max():.0f}")
+    print(f"  Tasks with 1 scaffold   : {(df['n_unique_scaffolds']==1).mean()*100:.1f}%")
+    print(f"  Tasks diversity > 0.5   : {(df['scaffold_diversity_ratio']>0.5).mean()*100:.1f}%")
 
 
 # =============================================================================
@@ -143,45 +153,62 @@ if __name__ == "__main__":
     combined.to_csv(out_csv, index=False)
     print(f"\nSaved → {out_csv}")
 
-    # ── Figure: 2-row × 3-col histogram grid ─────────────────────────────────
     split_colors   = {"train": "steelblue", "valid": "orange", "test": "tomato"}
     splits_present = [s for s in ("train", "valid", "test") if s in combined["split"].values]
 
-    fig, axes = plt.subplots(2, len(splits_present), figsize=(6 * len(splits_present), 8))
-    if len(splits_present) == 1:
-        axes = axes.reshape(2, 1)
+    # ── Figure 1: distribution histograms (4 rows × 3 cols) ──────────────────
+    # x-axes clipped at 99th percentile for count metrics to avoid outlier squish.
+    CLIP_PCT = 99
+    metrics_hist = [
+        ("n_molecules",              "Molecules / assay",          True),
+        ("n_unique_scaffolds",       "Unique scaffolds / assay",   True),
+        ("scaffold_diversity_ratio", "Diversity ratio (scaffolds / molecules)", False),
+        ("mean_mols_per_scaffold",   "Mean molecules / scaffold",  True),
+    ]
 
-    for col_i, split in enumerate(splits_present):
-        sub   = combined[combined.split == split]
-        color = split_colors[split]
-        label = split if TRAIN_SAMPLE is None or split != "train" \
-                else f"train (sample n={TRAIN_SAMPLE})"
+    n_rows = len(metrics_hist)
+    n_cols = len(splits_present)
+    fig1, axes1 = plt.subplots(n_rows, n_cols, figsize=(5.5 * n_cols, 3.8 * n_rows))
+    if n_cols == 1:
+        axes1 = axes1.reshape(n_rows, 1)
 
-        ax = axes[0, col_i]
-        ax.hist(sub["n_unique_scaffolds"], bins=50, color=color, edgecolor="none", alpha=0.85)
-        med = sub["n_unique_scaffolds"].median()
-        ax.axvline(med, color="black", linestyle="--", linewidth=1.2, label=f"median = {med:.0f}")
-        ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
-        ax.set_axisbelow(True)
-        ax.set_xlabel("Unique scaffolds per task", fontsize=10)
-        ax.set_ylabel("Number of tasks", fontsize=10)
-        ax.set_title(f"FS-Mol {label}\n({len(sub):,} assays)", fontsize=11)
-        ax.legend(fontsize=8)
+    for row_i, (col, title, do_clip) in enumerate(metrics_hist):
+        for col_i, split in enumerate(splits_present):
+            sub   = combined[combined["split"] == split]
+            vals  = sub[col].dropna()
+            color = split_colors[split]
+            ax    = axes1[row_i, col_i]
 
-        ax = axes[1, col_i]
-        ax.hist(sub["scaffold_diversity_ratio"], bins=40, color=color, edgecolor="none", alpha=0.85)
-        med_r = sub["scaffold_diversity_ratio"].median()
-        ax.axvline(med_r, color="black", linestyle="--", linewidth=1.2, label=f"median = {med_r:.3f}")
-        ax.yaxis.grid(True, linestyle="--", linewidth=0.6, alpha=0.5)
-        ax.set_axisbelow(True)
-        ax.set_xlabel("Diversity ratio (unique scaffolds / n_molecules)", fontsize=10)
-        ax.set_ylabel("Number of tasks", fontsize=10)
-        ax.set_title(f"Diversity ratio - {label}", fontsize=11)
-        ax.legend(fontsize=8)
+            if do_clip:
+                xmax   = np.percentile(vals, CLIP_PCT)
+                n_clip = int((vals > xmax).sum())
+                pvals  = vals[vals <= xmax]
+            else:
+                n_clip = 0
+                pvals  = vals
 
-    plt.suptitle("Per-Task Scaffold Diversity - FS-Mol", fontsize=13, y=1.01)
-    plt.tight_layout()
-    out_fig = os.path.join(FIGURES_DIR, "fig_scaffold_diversity_per_task.png")
-    plt.savefig(out_fig, dpi=150, bbox_inches="tight")
-    plt.close()
-    print(f"Figure saved → {out_fig}")
+            ax.hist(pvals, bins=40, color=color, edgecolor="none", alpha=0.85)
+            med = vals.median()
+            fmt = f"{med:.3f}" if col == "scaffold_diversity_ratio" else f"{med:.0f}"
+            ax.axvline(med, color="black", linestyle="--", linewidth=1.2, label=f"median = {fmt}")
+            ax.yaxis.grid(True, linestyle="--", linewidth=0.5, alpha=0.4)
+            ax.set_axisbelow(True)
+            ax.set_ylabel("Tasks", fontsize=9)
+            ax.legend(fontsize=7, loc="upper right")
+
+            if row_i == 0:
+                sp_label = split if (split != "train" or TRAIN_SAMPLE is None) \
+                           else f"train (n={TRAIN_SAMPLE})"
+                ax.set_title(f"FS-Mol {sp_label}\n({len(sub):,} assays)", fontsize=11)
+
+            xlabel = title
+            if n_clip > 0:
+                xlabel += f"\n(99th-pct clip; {n_clip} outlier{'s' if n_clip > 1 else ''} hidden)"
+            ax.set_xlabel(xlabel, fontsize=9)
+
+    fig1.suptitle("Per-Task Scaffold Diversity - FS-Mol", fontsize=13)
+    fig1.tight_layout()
+    out_fig1 = os.path.join(FIGURES_DIR, "fig_scaffold_distributions.png")
+    fig1.savefig(out_fig1, dpi=150, bbox_inches="tight")
+    plt.close(fig1)
+    print(f"Figure saved → {out_fig1}")

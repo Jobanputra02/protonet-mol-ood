@@ -21,7 +21,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 import numpy as np
 from model import (PrototypicalNetworkRegression, PrototypicalNetworkClassification,
-                   PNAGNNEncoder, FSMolGNNEncoder)
+                   ECFPEncoder, FSMolGNNEncoder)
 from data import FSMolEpisodeDataset, FSMolGraphEpisodeDataset, graph_episode_collate
 
 
@@ -39,19 +39,10 @@ def _encoder_config(encoder) -> dict:
     if isinstance(encoder, FSMolGNNEncoder):
         deg = encoder.deg
         return {
-            "encoder_type":    "fsmol_gnn",
+            "encoder_type":    "gnn",
             "hidden_channels": encoder.node_emb.out_features,
             "num_layers":      len(encoder.gnn_layers),
             "embedding_dim":   encoder.fc[-1].out_features,
-            "deg":             deg.tolist() if deg is not None else None,
-        }
-    elif isinstance(encoder, PNAGNNEncoder):
-        deg = encoder.deg
-        return {
-            "encoder_type":    "gnn",
-            "hidden_channels": encoder.convs[0].in_channels,
-            "num_layers":      len(encoder.convs),
-            "embedding_dim":   encoder.output_proj[-1].out_features,
             "deg":             deg.tolist() if deg is not None else None,
         }
     else:  # ECFPEncoder
@@ -71,11 +62,11 @@ def _worker_init_fn(worker_id: int) -> None:
 
 def _make_loaders(encoder, train_files, val_files,
                   n_episodes_train, n_episodes_val,
-                  n_support, n_query, shift_aware,
+                  n_support, n_query, training_split,
                   use_binary_labels: bool = False):
     """Return (train_loader, val_loader)."""
     is_fsmol_gnn = isinstance(encoder, FSMolGNNEncoder)
-    is_gnn       = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
+    is_gnn       = isinstance(encoder, FSMolGNNEncoder)
     DatasetCls   = FSMolGraphEpisodeDataset if is_gnn else FSMolEpisodeDataset
     collate_fn   = graph_episode_collate if is_gnn else None
     gnn_kwargs   = {"fsmol_style": is_fsmol_gnn} if is_gnn else {}
@@ -88,11 +79,13 @@ def _make_loaders(encoder, train_files, val_files,
 
     train_dataset = DatasetCls(
         train_files, n_episodes_train, n_support, n_query,
-        shift_aware=shift_aware, use_binary_labels=use_binary_labels, **gnn_kwargs,
+        training_split=training_split, use_binary_labels=use_binary_labels, **gnn_kwargs,
     )
+    # Validation uses the same training_split so scaffold/similarity models are
+    # early-stopped on OOD val episodes, matching the training objective.
     val_dataset = DatasetCls(
         val_files, n_episodes_val, n_support, n_query,
-        shift_aware=False, use_binary_labels=use_binary_labels, **gnn_kwargs,
+        training_split=training_split, use_binary_labels=use_binary_labels, **gnn_kwargs,
     )
 
     train_loader = DataLoader(
@@ -131,9 +124,10 @@ def pretrain_classification(
     n_episodes_train: int = 1000,     # episodes per epoch
     n_episodes_val: int = 200,        # val episodes per epoch (~5 per val assay)
     lr: float = 1e-4,                 # FS-Mol paper default (GNN); 1e-3 for ECFP
-    save_path: str = "ptn_ecfp_classification_shift_aware.pt",
-    shift_aware: bool = True,
+    save_path: str = "ptn_ecfp_classification.pt",
+    training_split: str = "random",   # "random" | "scaffold" | "similarity"
     seed: int = 42,
+    train_distance: str = "euclidean",  # "euclidean" | "mahalanobis" (FS-Mol paper default)
 ):
     """
     Epoch-based episodic training for PrototypicalNetworkClassification (BCE loss).
@@ -144,13 +138,13 @@ def pretrain_classification(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
 
-    is_gnn  = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
+    is_gnn  = isinstance(encoder, FSMolGNNEncoder)
     n_accum = tasks_per_batch
 
     train_loader, val_loader = _make_loaders(
         encoder, train_assays, val_assays,
         n_episodes_train, n_episodes_val,
-        n_support, n_query, shift_aware,
+        n_support, n_query, training_split,
         use_binary_labels=True,   # classification always trains with pre-binarised ChEMBL labels
     )
 
@@ -167,7 +161,8 @@ def pretrain_classification(
     no_improve          = 0
     early_stop_patience = 50 if is_gnn else 25
 
-    print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}")
+    print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}  |  "
+          f"training_split: {training_split}  |  train_distance: {train_distance}")
     print(f"  Train files: {len(train_assays)}  |  Val files: {len(val_assays)}")
     print(f"  Episodes/epoch: {n_episodes_train}  |  Steps/epoch: ~{n_episodes_train // tasks_per_batch}")
 
@@ -186,7 +181,8 @@ def pretrain_classification(
             s_in, s_lbl, q_in, q_lbl = _batch_to_device(batch, device)
 
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-                loss, metrics = model.compute_loss_batched(s_in, s_lbl, q_in, q_lbl)
+                loss, metrics = model.compute_loss_batched(s_in, s_lbl, q_in, q_lbl,
+                                                           train_distance=train_distance)
 
             (loss / n_accum).backward()
             accum_count += 1
@@ -195,7 +191,7 @@ def pretrain_classification(
                 epoch_dauprc_buf.append(metrics["delta_auprc"])
 
             if accum_count == n_accum:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
                 optimizer.step()
                 optimizer.zero_grad()
                 accum_count = 0
@@ -216,7 +212,8 @@ def pretrain_classification(
                 vs_in, vs_lbl, vq_in, vq_lbl = _batch_to_device(vbatch, device)
                 with torch.autocast(device_type=device.type, dtype=amp_dtype,
                                     enabled=use_amp):
-                    vloss, vmet = model.compute_loss_batched(vs_in, vs_lbl, vq_in, vq_lbl)
+                    vloss, vmet = model.compute_loss_batched(vs_in, vs_lbl, vq_in, vq_lbl,
+                                                             train_distance=train_distance)
                 val_bce_buf.append(vloss.item())
                 if not np.isnan(vmet["delta_auprc"]):
                     val_dauprc_buf.append(vmet["delta_auprc"])
@@ -243,9 +240,10 @@ def pretrain_classification(
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_delta_auprc":     best_val_dauprc,
                 "config": {
-                    "model_type":  "classification",
-                    "n_support":   n_support,
-                    "shift_aware": shift_aware,
+                    "model_type":      "classification",
+                    "n_support":       n_support,
+                    "training_split":  training_split,
+                    "train_distance":  train_distance,
                     **encoder_cfg,
                 },
             }, save_path)
@@ -276,8 +274,8 @@ def pretrain_regression(
     n_episodes_train: int = 1000,
     n_episodes_val: int = 200,
     lr: float = 1e-4,
-    save_path: str = "ptn_ecfp_regression_shift_aware.pt",
-    shift_aware: bool = True,
+    save_path: str = "ptn_ecfp_regression.pt",
+    training_split: str = "random",   # "random" | "scaffold" | "similarity"
     seed: int = 42,
 ):
     """
@@ -288,13 +286,13 @@ def pretrain_regression(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on: {device}")
 
-    is_gnn  = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
+    is_gnn  = isinstance(encoder, FSMolGNNEncoder)
     n_accum = tasks_per_batch
 
     train_loader, val_loader = _make_loaders(
         encoder, train_assays, val_assays,
         n_episodes_train, n_episodes_val,
-        n_support, n_query, shift_aware,
+        n_support, n_query, training_split,
     )
 
     model     = PrototypicalNetworkRegression(encoder).to(device)
@@ -310,7 +308,7 @@ def pretrain_regression(
     no_improve          = 0
     early_stop_patience = 50 if is_gnn else 25
 
-    print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}")
+    print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}  |  training_split: {training_split}")
     print(f"  Train files: {len(train_assays)}  |  Val files: {len(val_assays)}")
 
     for epoch in range(1, n_epochs + 1):
@@ -336,7 +334,7 @@ def pretrain_regression(
             epoch_rmse_buf.append(metrics["rmse"])
 
             if accum_count == n_accum:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
                 optimizer.step()
                 optimizer.zero_grad()
                 accum_count = 0
@@ -380,9 +378,9 @@ def pretrain_regression(
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_rmse":            best_val_rmse,
                 "config": {
-                    "model_type":  "regression",
-                    "n_support":   n_support,
-                    "shift_aware": shift_aware,
+                    "model_type":     "regression",
+                    "n_support":      n_support,
+                    "training_split": training_split,
                     **encoder_cfg,
                 },
             }, save_path)
@@ -395,184 +393,4 @@ def pretrain_regression(
                 break
 
     print(f"\nPretraining complete. Best Val RMSE: {best_val_rmse:.4f}")
-    return model
-
-
-# =============================================================================
-# RATIO ANNEALING TRAINING
-# =============================================================================
-
-def pretrain_classification_anneal(
-    encoder,
-    train_assays: list[str],
-    val_assays: list[str],
-    n_epochs: int = 100,
-    tasks_per_batch: int = 16,
-    n_support: Union[int, list] = 64,
-    n_query: int = 256,
-    n_episodes_train: int = 1000,
-    n_episodes_val: int = 200,
-    lr: float = 1e-4,
-    save_path: str = "ptn_classification_anneal.pt",
-    max_ratio: float = 0.6,    # final scaffold episode fraction (never go to 1.0)
-    seed: int = 42,
-):
-    """
-    Episode-ratio annealing for classification.
-
-    Starts with 100% random episodes, linearly increases the fraction of
-    scaffold-split episodes to max_ratio over training.  The model first
-    learns basic few-shot representations from IID episodes, then is gradually
-    exposed to scaffold OOD gaps without ever losing the random-episode signal.
-
-    Scaffold ratio schedule: 0.0 (epoch 1) -> max_ratio (epoch n_epochs), linear.
-
-    Uses persistent_workers=False on the train loader so that each epoch's
-    workers pick up the updated shift_aware_ratio via pickling on spawn.
-    """
-    set_seed(seed)
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training on: {device}")
-    print(f"  Ratio annealing: scaffold fraction 0.0 -> {max_ratio:.2f} over {n_epochs} epochs")
-
-    is_fsmol_gnn = isinstance(encoder, FSMolGNNEncoder)
-    is_gnn       = isinstance(encoder, (PNAGNNEncoder, FSMolGNNEncoder))
-    DatasetCls   = FSMolGraphEpisodeDataset if is_gnn else FSMolEpisodeDataset
-    collate_fn   = graph_episode_collate if is_gnn else None
-    gnn_kwargs   = {"fsmol_style": is_fsmol_gnn} if is_gnn else {}
-
-    n_accum = tasks_per_batch
-
-    # Train dataset: starts with shift_aware=False; ratio updated before each epoch.
-    # persistent_workers=False so workers are re-spawned each epoch and pick up
-    # the updated shift_aware_ratio attribute via pickling.
-    train_dataset = DatasetCls(
-        train_assays, n_episodes_train, n_support, n_query,
-        shift_aware=False, use_binary_labels=True, **gnn_kwargs,
-    )
-    train_loader = DataLoader(
-        train_dataset, batch_size=1, shuffle=False,
-        num_workers=6, pin_memory=not is_gnn, prefetch_factor=4,
-        collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
-        persistent_workers=False,
-    )
-
-    # Val loader: always random, persistent workers fine (ratio never changes)
-    val_dataset = DatasetCls(
-        val_assays, n_episodes_val, n_support, n_query,
-        shift_aware=False, use_binary_labels=True, **gnn_kwargs,
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=1, shuffle=False,
-        num_workers=2, pin_memory=not is_gnn, prefetch_factor=2,
-        collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
-        persistent_workers=True,
-    )
-
-    model     = PrototypicalNetworkClassification(encoder).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-    use_amp   = (device.type == "cuda")
-    amp_dtype = (torch.bfloat16
-                 if use_amp and torch.cuda.is_bf16_supported()
-                 else torch.float16)
-    print(f"  AMP dtype: {amp_dtype} (bf16 supported: {torch.cuda.is_bf16_supported() if use_amp else 'N/A'})")
-
-    encoder_cfg         = _encoder_config(encoder)
-    best_val_dauprc     = -float("inf")
-    no_improve          = 0
-    early_stop_patience = 50 if is_gnn else 25
-
-    print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}")
-    print(f"  Train files: {len(train_assays)}  |  Val files: {len(val_assays)}")
-    print(f"  Episodes/epoch: {n_episodes_train}  |  Steps/epoch: ~{n_episodes_train // tasks_per_batch}")
-
-    for epoch in range(1, n_epochs + 1):
-        # Linearly anneal scaffold ratio: 0.0 at epoch 1, max_ratio at epoch n_epochs
-        ratio = max_ratio * (epoch - 1) / max(n_epochs - 1, 1)
-        train_dataset.shift_aware_ratio = ratio
-
-        # ------------------------------------------------------------------
-        # Training
-        # ------------------------------------------------------------------
-        model.train()
-        optimizer.zero_grad()
-        accum_count    = 0
-        step           = 0
-        epoch_loss_buf:   list[float] = []
-        epoch_dauprc_buf: list[float] = []
-
-        for batch in train_loader:
-            s_in, s_lbl, q_in, q_lbl = _batch_to_device(batch, device)
-
-            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-                loss, metrics = model.compute_loss_batched(s_in, s_lbl, q_in, q_lbl)
-
-            (loss / n_accum).backward()
-            accum_count += 1
-            epoch_loss_buf.append(loss.item())
-            if not np.isnan(metrics["delta_auprc"]):
-                epoch_dauprc_buf.append(metrics["delta_auprc"])
-
-            if accum_count == n_accum:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
-                optimizer.zero_grad()
-                accum_count = 0
-                step += 1
-
-        if accum_count > 0:
-            optimizer.zero_grad()
-
-        # ------------------------------------------------------------------
-        # Validation
-        # ------------------------------------------------------------------
-        model.eval()
-        val_dauprc_buf: list[float] = []
-        with torch.no_grad():
-            for vbatch in val_loader:
-                vs_in, vs_lbl, vq_in, vq_lbl = _batch_to_device(vbatch, device)
-                with torch.autocast(device_type=device.type, dtype=amp_dtype,
-                                    enabled=use_amp):
-                    _, vmet = model.compute_loss_batched(vs_in, vs_lbl, vq_in, vq_lbl)
-                if not np.isnan(vmet["delta_auprc"]):
-                    val_dauprc_buf.append(vmet["delta_auprc"])
-
-        train_dauprc = float(np.nanmean(epoch_dauprc_buf)) if epoch_dauprc_buf else float("nan")
-        train_loss   = float(np.mean(epoch_loss_buf))       if epoch_loss_buf   else float("nan")
-        val_dauprc   = float(np.mean(val_dauprc_buf))       if val_dauprc_buf   else float("nan")
-
-        print(
-            f"Epoch {epoch:3d}/{n_epochs} | ratio={ratio:.3f} | Steps: {step} | "
-            f"Train BCE: {train_loss:.4f} | Train dAUPRC: {train_dauprc:+.4f} | "
-            f"Val dAUPRC: {val_dauprc:+.4f}"
-        )
-
-        # ------------------------------------------------------------------
-        # Checkpoint + early stopping
-        # ------------------------------------------------------------------
-        if val_dauprc > best_val_dauprc:
-            best_val_dauprc = val_dauprc
-            no_improve      = 0
-            torch.save({
-                "epoch":               epoch,
-                "model_state_dict":    model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_delta_auprc":     best_val_dauprc,
-                "config": {
-                    "model_type":       "classification",
-                    "n_support":        n_support,
-                    "shift_aware":      False,
-                    "anneal_max_ratio": max_ratio,
-                    **encoder_cfg,
-                },
-            }, save_path)
-            print(f"  -> Saved best model (Val dAUPRC: {best_val_dauprc:+.4f})")
-        else:
-            no_improve += 1
-            if no_improve >= early_stop_patience:
-                print(f"\nEarly stopping at epoch {epoch} "
-                      f"(no improvement for {early_stop_patience} epochs).")
-                break
-
-    print(f"\nPretraining complete. Best Val dAUPRC: {best_val_dauprc:+.4f}")
     return model

@@ -3,12 +3,11 @@ Prototypical Network for Molecular Property Prediction
 =======================================================
 Encoders (choose one, pass to the head at construction time):
   ECFPEncoder     - ECFP4 2048-bit fingerprint + 3-layer MLP
-  PNAGNNEncoder   - Principal Neighbourhood Aggregation GNN (FS-Mol paper)
+  FSMolGNNEncoder - FS-Mol-faithful PNA GNN fused with ECFP + RDKit descriptors
 
 Heads (encoder-agnostic, work with any encoder above):
-  PrototypicalNetworkRegression    - kernel regression, MSE loss     (Part 0)
-  PrototypicalNetworkClassification - true PN binary classification,
-                                      BCE loss                        (Part A)
+  PrototypicalNetworkRegression     - kernel regression, MSE loss
+  PrototypicalNetworkClassification - binary prototypical classification, BCE loss
 
 Distance function: squared Euclidean (≡ cosine on L2-normalised unit sphere).
 
@@ -53,92 +52,6 @@ class ECFPEncoder(nn.Module):
 
 
 # =============================================================================
-# ENCODER B: PNA GNN  (FS-Mol paper, Schwartz et al. 2022)
-# =============================================================================
-
-class PNAGNNEncoder(nn.Module):
-    """
-    Principal Neighbourhood Aggregation GNN encoder.
-    Matches the architecture used in the FS-Mol prototypical network paper.
-
-    Architecture:
-      - Linear node embedding: node_feat_dim → hidden_channels
-      - 6 × PNAConv layers with BatchNorm + ReLU
-        aggregators : mean, min, max, std
-        scalers     : identity, amplification, attenuation
-      - Global mean pooling → (n_graphs, hidden_channels)
-      - 2-layer MLP projection → embedding_dim
-      - L2 normalisation
-
-    Input:  PyTorch Geometric Batch (x, edge_index, edge_attr, batch)
-    Output: (n_graphs, embedding_dim) L2-normalised float tensor
-
-    The `deg` tensor (degree histogram over the training set) is required for
-    the amplification/attenuation scalers. Compute it once via
-    featurize.compute_degree_histogram() and store it in the checkpoint.
-    """
-
-    def __init__(
-        self,
-        node_feat_dim: int,
-        edge_feat_dim: int,
-        hidden_channels: int = 128,
-        num_layers: int = 6,
-        embedding_dim: int = 256,
-        deg: torch.Tensor | None = None,
-    ):
-        super().__init__()
-        from torch_geometric.nn import PNAConv, BatchNorm, global_mean_pool  # type: ignore
-
-        self.global_mean_pool = global_mean_pool
-        self.deg = deg  # stored for checkpoint serialisation via _encoder_config
-
-        aggregators = ["mean", "min", "max", "std"]
-        scalers     = ["identity", "amplification", "attenuation"]
-
-        self.node_emb = nn.Linear(node_feat_dim, hidden_channels)
-
-        self.convs = nn.ModuleList()
-        self.batch_norms = nn.ModuleList()
-        for _ in range(num_layers):
-            self.convs.append(PNAConv(
-                in_channels=hidden_channels,
-                out_channels=hidden_channels,
-                aggregators=aggregators,
-                scalers=scalers,
-                deg=deg,
-                edge_dim=edge_feat_dim,
-                towers=4,
-                pre_layers=1,
-                post_layers=1,
-                divide_input=False,
-            ))
-            self.batch_norms.append(BatchNorm(hidden_channels))
-
-        self.output_proj = nn.Sequential(
-            nn.Linear(hidden_channels, hidden_channels),
-            nn.ReLU(),
-            nn.Linear(hidden_channels, embedding_dim),
-        )
-
-    def forward(self, batch) -> torch.Tensor:
-        """
-        Args:
-            batch: PyG Batch with fields x, edge_index, edge_attr, batch
-        Returns:
-            embeddings: (n_graphs, embedding_dim) L2-normalised
-        """
-        x = self.node_emb(batch.x)
-        for conv, bn in zip(self.convs, self.batch_norms):
-            x = conv(x, batch.edge_index, batch.edge_attr)
-            x = bn(x)
-            x = F.relu(x)
-        x = self.global_mean_pool(x, batch.batch)   # (n_graphs, hidden_channels)
-        x = self.output_proj(x)
-        return F.normalize(x, p=2, dim=-1)
-
-
-# =============================================================================
 # SHARED UTILITIES
 # =============================================================================
 
@@ -147,7 +60,7 @@ def _encode_many(encoder: nn.Module, inputs, B: int, n: int) -> torch.Tensor:
     Encode B*n molecules and reshape to (B, n, emb_dim).
     Works for both encoder types:
       - ECFPEncoder:   inputs is Tensor(B, n, 2048)  → reshape → encode → reshape
-      - PNAGNNEncoder: inputs is PyG Batch(B*n graphs) → encode  → reshape
+      - FSMolGNNEncoder: inputs is PyG Batch(B*n graphs) → encode → reshape
     """
     if isinstance(inputs, torch.Tensor):
         D = inputs.shape[-1]
@@ -221,9 +134,9 @@ def _mahalanobis_dists(
       Σ_k = λ_k · cov(class_k) + (1 − λ_k) · cov(task) + 0.1 · I
       d(q, k) = (q − μ_k)ᵀ Σ_k⁻¹ (q − μ_k)
 
-    Used at eval time only. Training uses Euclidean (see forward_batched).
-
     All covariance ops run in float32 for numerical stability even under AMP.
+    Precision matrix computed via torch.inverse (matches FS-Mol paper) so that
+    gradients flow through it during training — do NOT detach sigma.
 
     Args:
         qry_emb:     (n_qry, D)
@@ -244,11 +157,13 @@ def _mahalanobis_dists(
         lam  = min(n_k / (n_k + 1), 0.1)   # FS-Mol paper: cap at 0.1
         sigma = lam * _sample_cov(cls_embs) + (1.0 - lam) * task_cov + 0.1 * I
         diff  = (qry_emb - protos[cls_idx].unsqueeze(0)).float()   # (n_qry, D)
+        # torch.inverse matches FS-Mol paper — gradients flow through the precision
+        # matrix. Fall back to Euclidean for singular episodes (collapsed dimension).
         try:
-            sol = torch.linalg.solve(sigma, diff.T)   # (D, n_qry)
-            d   = (diff * sol.T).sum(dim=-1).clamp(min=0)
-        except Exception:
-            d = (diff ** 2).sum(dim=-1)               # fallback: squared Euclidean
+            precision = torch.inverse(sigma)                          # (D, D)
+            d = (diff @ precision * diff).sum(dim=-1).clamp(min=0)   # (n_qry,)
+        except torch.linalg.LinAlgError:
+            d = (diff ** 2).sum(dim=-1)
         dists.append(d)
     return torch.stack(dists, dim=-1)   # (n_qry, 2)
 
@@ -260,7 +175,7 @@ def _mahalanobis_dists(
 class PrototypicalNetworkRegression(nn.Module):
     """
     Kernel regression in learned embedding space (Nadaraya-Watson).
-    Encoder-agnostic: pass an ECFPEncoder or PNAGNNEncoder at construction.
+    Encoder-agnostic: pass an ECFPEncoder or FSMolGNNEncoder at construction.
 
     pred(x_q) = Σ_i softmax(-d(f(x_q), f(x_i)) / τ) × y_i
     Loss: MSE.  τ is a learnable scalar (starts at 1.0).
@@ -392,12 +307,15 @@ class PrototypicalNetworkClassification(nn.Module):
 
     def forward_batched(
         self, support_input, support_labels: torch.Tensor, query_input,
+        train_distance: str = "euclidean",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Args:
-            support_input:  Tensor(B, n_sup, D) or PyG Batch(B*n_sup graphs)
-            support_labels: Tensor(B, n_sup)
-            query_input:    Tensor(B, n_qry, D) or PyG Batch(B*n_qry graphs)
+            support_input:   Tensor(B, n_sup, D) or PyG Batch(B*n_sup graphs)
+            support_labels:  Tensor(B, n_sup)
+            query_input:     Tensor(B, n_qry, D) or PyG Batch(B*n_qry graphs)
+            train_distance:  "euclidean" (vectorised, default) or "mahalanobis"
+                             (per-episode loop, matches FS-Mol paper training protocol)
         Returns:
             p_active:   Tensor(B, n_qry)
             valid_mask: BoolTensor(B,) - False for degenerate (all-one-class) episodes
@@ -416,27 +334,37 @@ class PrototypicalNetworkClassification(nn.Module):
         inact_count = (~active_mask).float().sum(dim=1) # (B,)
         valid_mask  = (act_count > 0) & (inact_count > 0)  # (B,)
 
-        # Compute class prototypes (clamped counts to avoid 0-division; invalid episodes
-        # produce a meaningless prototype that we mask out in the loss)
+        # Compute class prototypes
         act_w   = active_mask.float() / act_count.clamp(min=1).unsqueeze(1)   # (B, n_sup)
         inact_w = (~active_mask).float() / inact_count.clamp(min=1).unsqueeze(1)
 
         proto_active   = torch.bmm(act_w.unsqueeze(1), sup_emb).squeeze(1)    # (B, emb_dim)
         proto_inactive = torch.bmm(inact_w.unsqueeze(1), sup_emb).squeeze(1)  # (B, emb_dim)
 
-        # Squared Euclidean to each prototype - fully vectorised, no per-episode loop.
-        # Mahalanobis is used only at eval time (predict_from_embeddings) where the GNN
-        # is already trained and covariances are meaningful. During training the GNN starts
-        # from random weights: embeddings cluster near a random shell on the unit sphere
-        # (concentration of measure), so Mahalanobis gives ~uniform distances → BCE stays
-        # at ln(2) ≈ 0.693 with zero gradient. Euclidean gives clean signal from day 1.
-        diff_a = qry_emb - proto_active.unsqueeze(1)    # (B, n_qry, D)
-        diff_i = qry_emb - proto_inactive.unsqueeze(1)  # (B, n_qry, D)
-        d_active   = (diff_a ** 2).sum(dim=-1)          # (B, n_qry)
-        d_inactive = (diff_i ** 2).sum(dim=-1)          # (B, n_qry)
-        dists = torch.stack([d_active, d_inactive], dim=-1)  # (B, n_qry, 2)
-        p_active = F.softmax(-dists, dim=-1)[..., 0]    # (B, n_qry)
-        # Force degenerate (all-one-class) episodes to 0.5
+        if train_distance == "mahalanobis":
+            # Per-episode loop: covariance is per-episode and can't be vectorised.
+            # Matches FS-Mol paper training protocol. L2 norm must be OFF (currently the
+            # case) for covariances to be non-degenerate.
+            p_list = []
+            for b in range(B):
+                if not valid_mask[b]:
+                    p_list.append(torch.full((n_qry,), 0.5, device=sup_emb.device))
+                    continue
+                protos_b = torch.stack([proto_active[b], proto_inactive[b]], dim=0)
+                dists_b  = _mahalanobis_dists(
+                    qry_emb[b], protos_b, sup_emb[b], active_mask[b]
+                )  # (n_qry, 2)
+                p_list.append(F.softmax(-dists_b, dim=1)[:, 0])
+            p_active = torch.stack(p_list, dim=0)  # (B, n_qry)
+        else:
+            # Euclidean: fully vectorised.
+            diff_a = qry_emb - proto_active.unsqueeze(1)    # (B, n_qry, D)
+            diff_i = qry_emb - proto_inactive.unsqueeze(1)  # (B, n_qry, D)
+            d_active   = (diff_a ** 2).sum(dim=-1)          # (B, n_qry)
+            d_inactive = (diff_i ** 2).sum(dim=-1)          # (B, n_qry)
+            dists    = torch.stack([d_active, d_inactive], dim=-1)  # (B, n_qry, 2)
+            p_active = F.softmax(-dists, dim=-1)[..., 0]            # (B, n_qry)
+
         p_active = torch.where(valid_mask.unsqueeze(1), p_active,
                                torch.full_like(p_active, 0.5))
         return p_active, valid_mask
@@ -475,6 +403,7 @@ class PrototypicalNetworkClassification(nn.Module):
         support_labels: torch.Tensor,
         query_input,
         query_labels: torch.Tensor,
+        train_distance: str = "euclidean",
     ) -> tuple[torch.Tensor, dict]:
         """
         Args:
@@ -482,13 +411,14 @@ class PrototypicalNetworkClassification(nn.Module):
             support_labels:       (B, n_support)  - continuous
             query_fingerprints:   (B, n_query, input_dim)
             query_labels:         (B, n_query)    - continuous; binarised here
+            train_distance:       "euclidean" or "mahalanobis"
 
         Returns:
             loss:    scalar BCE over valid episodes
             metrics: {"delta_auprc": float}
         """
         p_active, valid_mask = self.forward_batched(
-            support_input, support_labels, query_input
+            support_input, support_labels, query_input, train_distance=train_distance
         )
 
         # query_labels are pre-binarised (0/1) - threshold at 0.5
