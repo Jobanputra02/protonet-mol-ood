@@ -118,8 +118,10 @@ _MORGAN = GetMorganGenerator(radius=2, fpSize=2048)  # type: ignore
 DRUGOOD_SCAFFOLD_JSON = os.path.join(DRUGOOD_DIR, "lbap_core_ic50_scaffold.json")
 
 # ===== CONFIG - edit these, then run (no arguments) =====
-SEED   = 42      # subsampling / t-SNE seed
-N_TSNE = 5000    # molecules per dataset in the t-SNE projection (smaller = faster)
+SEED     = 42     # subsampling seed
+N_FP     = 20000  # molecules per dataset for fingerprint computation (Sections 2+3)
+N_TSNE   = 5000   # molecules per dataset in the t-SNE projection (smaller = faster)
+RUN_SECTIONS_2_3 = True   # set True to run Tanimoto + t-SNE (slow, high memory)
 # ========================================================
 
 
@@ -188,6 +190,26 @@ def tanimoto_distance_matrix(fps_a: np.ndarray, fps_b: np.ndarray) -> np.ndarray
 # SECTION 1: MOLECULAR PROPERTIES
 # =============================================================================
 
+DATASET_LABEL = {
+    "fsmol_train":   "FS-Mol train",
+    "fsmol_test":    "FS-Mol test",
+    "drugood_train": "DrugOOD train",
+    "drugood_ood":   "DrugOOD ood_test",
+}
+DATASET_COLOR = {
+    "fsmol_train":   "#2a78d6",
+    "fsmol_test":    "#1baf7a",
+    "drugood_train": "#e34948",
+    "drugood_ood":   "#eda100",
+}
+PROP_LABEL = {
+    "molecular_mass":    "Molecular Mass (Da)",
+    "n_heavy_atoms":     "Heavy Atom Count",
+    "n_rotatable_bonds": "Rotatable Bonds",
+    "n_aromatic_rings":  "Aromatic Rings",
+}
+
+
 def run_molecular_properties(
     fsmol_train: list[str],
     fsmol_test: list[str],
@@ -208,10 +230,9 @@ def run_molecular_properties(
     dfs: dict[str, pd.DataFrame] = {}
     for name, smiles_list in datasets.items():
         print(f"\n--- {name} ({len(smiles_list):,} molecules) ---")
-        dfs[name] = compute_structural_variability(smiles_list)
+        dfs[name] = compute_structural_variability(smiles_list, verbose=True)
         summarize_variability(dfs[name])
 
-    # Side-by-side mean comparison
     numeric_cols = ["molecular_mass", "n_heavy_atoms", "n_rotatable_bonds", "n_aromatic_rings"]
     comparison = pd.DataFrame(
         {name: df[numeric_cols].mean() for name, df in dfs.items()}
@@ -219,18 +240,44 @@ def run_molecular_properties(
     print("\n=== Side-by-side mean comparison ===")
     print(comparison)
 
-    # Scaffold overlap
-    fs_scaffolds  = set(dfs["fsmol_train"]["generic_scaffold"].dropna())
-    do_scaffolds  = set(dfs["drugood_ood"]["generic_scaffold"].dropna())
-    overlap       = fs_scaffolds & do_scaffolds
-    print(f"\nGeneric scaffold overlap (FS-Mol train → DrugOOD ood_test):")
-    print(f"  FS-Mol train  : {len(fs_scaffolds):,} unique")
-    print(f"  DrugOOD ood   : {len(do_scaffolds):,} unique")
-    print(f"  Shared        : {len(overlap):,}  ({100*len(overlap)/max(len(do_scaffolds),1):.1f}% of DrugOOD)")
-
     out_csv = os.path.join(RESULTS_DIR, "structural_var_comparison.csv")
     comparison.to_csv(out_csv)
     print(f"\nSaved → {out_csv}")
+
+    # ── Violin figure: 4 properties × 4 datasets ──────────────────────────────
+    fig, axes = plt.subplots(1, len(numeric_cols), figsize=(13, 5))
+    dataset_order = list(datasets.keys())
+    positions = np.arange(len(dataset_order))
+
+    for ax, col in zip(axes, numeric_cols):
+        data   = [dfs[name][col].dropna().values for name in dataset_order]
+        colors = [DATASET_COLOR[name] for name in dataset_order]
+        parts  = ax.violinplot(data, positions=positions, showmedians=True,
+                               showextrema=False, widths=0.7)
+        for body, color in zip(parts["bodies"], colors):
+            body.set_facecolor(color)
+            body.set_alpha(0.75)
+            body.set_edgecolor("#333333")
+            body.set_linewidth(0.8)
+        parts["cmedians"].set_color("#000000")
+        parts["cmedians"].set_linewidth(1.5)
+        ax.set_xticks(positions)
+        ax.set_xticklabels([DATASET_LABEL[n] for n in dataset_order],
+                           rotation=30, ha="right", fontsize=8)
+        ax.set_ylabel(PROP_LABEL[col], fontsize=9)
+        ax.grid(True, axis="y", alpha=0.3)
+        ax.set_title(PROP_LABEL[col], fontsize=9, fontweight="bold")
+
+    n_shown = min(len(dfs[k]) for k in dfs)
+    fig.suptitle(
+        f"Chemical Space Comparison (full dataset, n={n_shown:,}–{max(len(dfs[k]) for k in dfs):,})",
+        fontsize=11, y=1.02,
+    )
+    plt.tight_layout()
+    out_fig = os.path.join(FIGURES_DIR, "chemical_space_properties.png")
+    plt.savefig(out_fig, dpi=180, bbox_inches="tight")
+    plt.close()
+    print(f"Saved → {out_fig}")
 
 
 # =============================================================================
@@ -328,22 +375,25 @@ if __name__ == "__main__":
 
     # ── Load SMILES ───────────────────────────────────────────────────────────
     print("Loading SMILES...")
-    fsmol_train_smi  = load_fsmol_smiles(os.path.join(FSMOL_DIR, "train"))
-    fsmol_test_smi   = load_fsmol_smiles(os.path.join(FSMOL_DIR, "test"))
+    fsmol_train_smi   = load_fsmol_smiles(os.path.join(FSMOL_DIR, "train"))
+    fsmol_test_smi    = load_fsmol_smiles(os.path.join(FSMOL_DIR, "test"))
     drugood_train_smi = load_drugood_smiles(DRUGOOD_SCAFFOLD_JSON, "train")
     drugood_ood_smi   = load_drugood_smiles(DRUGOOD_SCAFFOLD_JSON, "ood_test")
     print(f"  FS-Mol train: {len(fsmol_train_smi):,}  test: {len(fsmol_test_smi):,}")
     print(f"  DrugOOD train: {len(drugood_train_smi):,}  ood_test: {len(drugood_ood_smi):,}")
 
-    # Section 1: molecular properties (uses SMILES directly, no fingerprints)
-    run_molecular_properties(fsmol_train_smi, fsmol_test_smi, drugood_train_smi, drugood_ood_smi)
+    # Section 1: molecular property violin plots (full data)
+    run_molecular_properties(fsmol_train_smi, fsmol_test_smi,
+                             drugood_train_smi, drugood_ood_smi)
 
-    # Sections 2+3 need fingerprints - compute once, share
-    print("\nComputing ECFP4 fingerprints...")
-    fsmol_fps   = compute_fps(fsmol_train_smi, "FS-Mol train")
-    drugood_fps = compute_fps(drugood_ood_smi, "DrugOOD ood_test")
-
-    run_tanimoto(fsmol_fps, drugood_fps, rng)
-    run_tsne(fsmol_fps, drugood_fps, rng)
+    if RUN_SECTIONS_2_3:
+        # Subsample before fingerprint computation to avoid OOM
+        fs_smi_fp  = list(rng.choice(fsmol_train_smi,  size=min(N_FP, len(fsmol_train_smi)),  replace=False))
+        do_smi_fp  = list(rng.choice(drugood_ood_smi,  size=min(N_FP, len(drugood_ood_smi)),  replace=False))
+        print(f"\nComputing ECFP4 fingerprints (n={N_FP:,} per dataset)...")
+        fsmol_fps   = compute_fps(fs_smi_fp,  "FS-Mol train")
+        drugood_fps = compute_fps(do_smi_fp,  "DrugOOD ood_test")
+        run_tanimoto(fsmol_fps, drugood_fps, rng)
+        run_tsne(fsmol_fps, drugood_fps, rng)
 
     print("\nDone.")

@@ -64,41 +64,53 @@ def _make_loaders(encoder, train_files, val_files,
                   n_episodes_train, n_episodes_val,
                   n_support, n_query, training_split,
                   use_binary_labels: bool = False):
-    """Return (train_loader, val_loader)."""
-    is_fsmol_gnn = isinstance(encoder, FSMolGNNEncoder)
-    is_gnn       = isinstance(encoder, FSMolGNNEncoder)
-    DatasetCls   = FSMolGraphEpisodeDataset if is_gnn else FSMolEpisodeDataset
-    collate_fn   = graph_episode_collate if is_gnn else None
-    gnn_kwargs   = {"fsmol_style": is_fsmol_gnn} if is_gnn else {}
+    """Return (train_loader, val_loader).
 
-    # batch_size=1 for all encoders - streaming assays have variable query sizes
-    # (small assays may have fewer than n_query remaining molecules after support sampling),
-    # so stacking a batch of 16 episodes would fail. Gradient accumulation over
-    # tasks_per_batch forward passes produces the same effective gradient.
-    train_batch_size = 1
+    train_files / val_files can be:
+      - list[str]  : .jsonl.gz file paths (FS-Mol path, builds FSMolEpisodeDataset)
+      - torch Dataset : pre-built dataset e.g. MicEpisodeDataset (used as-is)
+    """
+    from torch.utils.data import Dataset as _Dataset
+    is_prebuilt = isinstance(train_files, _Dataset)
+    is_gnn      = isinstance(encoder, FSMolGNNEncoder)
 
-    train_dataset = DatasetCls(
-        train_files, n_episodes_train, n_support, n_query,
-        training_split=training_split, use_binary_labels=use_binary_labels, **gnn_kwargs,
-    )
-    # Validation uses the same training_split so scaffold/similarity models are
-    # early-stopped on OOD val episodes, matching the training objective.
-    val_dataset = DatasetCls(
-        val_files, n_episodes_val, n_support, n_query,
-        training_split=training_split, use_binary_labels=use_binary_labels, **gnn_kwargs,
-    )
+    if is_prebuilt:
+        train_dataset = train_files
+        val_dataset   = val_files
+        collate_fn    = graph_episode_collate if is_gnn else None
+    else:
+        is_fsmol_gnn = is_gnn
+        DatasetCls   = FSMolGraphEpisodeDataset if is_gnn else FSMolEpisodeDataset
+        collate_fn   = graph_episode_collate if is_gnn else None
+        gnn_kwargs   = {"fsmol_style": is_fsmol_gnn} if is_gnn else {}
+        train_dataset = DatasetCls(
+            train_files, n_episodes_train, n_support, n_query,
+            training_split=training_split, use_binary_labels=use_binary_labels, **gnn_kwargs,
+        )
+        # Validation uses the same training_split so scaffold/similarity models are
+        # early-stopped on OOD val episodes, matching the training objective.
+        val_dataset = DatasetCls(
+            val_files, n_episodes_val, n_support, n_query,
+            training_split=training_split, use_binary_labels=use_binary_labels, **gnn_kwargs,
+        )
 
+    # batch_size=1 for all encoders - variable query sizes prevent larger batches.
+    # Gradient accumulation over tasks_per_batch passes gives same effective gradient.
     train_loader = DataLoader(
-        train_dataset, batch_size=train_batch_size, shuffle=False,
-        num_workers=6, pin_memory=not is_gnn, prefetch_factor=4,
+        train_dataset, batch_size=1, shuffle=False,
+        num_workers=0 if is_prebuilt else 6,
+        pin_memory=not is_gnn,
+        prefetch_factor=None if is_prebuilt else 4,
         collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
-        persistent_workers=True,
+        persistent_workers=False if is_prebuilt else True,
     )
     val_loader = DataLoader(
         val_dataset, batch_size=1, shuffle=False,
-        num_workers=2, pin_memory=not is_gnn, prefetch_factor=2,
+        num_workers=0 if is_prebuilt else 2,
+        pin_memory=not is_gnn,
+        prefetch_factor=None if is_prebuilt else 2,
         collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
-        persistent_workers=True,
+        persistent_workers=False if is_prebuilt else True,
     )
     return train_loader, val_loader
 
@@ -115,8 +127,8 @@ def _batch_to_device(batch, device):
 
 def pretrain_classification(
     encoder,
-    train_assays: list[str],          # .jsonl.gz file paths - ALL training files
-    val_assays: list[str],            # .jsonl.gz file paths - all val files
+    train_assays,          # list[str] file paths OR pre-built Dataset (e.g. MicEpisodeDataset)
+    val_assays,            # list[str] file paths OR pre-built Dataset
     n_epochs: int = 100,
     tasks_per_batch: int = 16,        # episodes accumulated per optimizer step
     n_support: Union[int, list] = 64,  # fixed int or list[int] drawn per episode
@@ -128,6 +140,8 @@ def pretrain_classification(
     training_split: str = "random",   # "random" | "scaffold" | "similarity"
     seed: int = 42,
     train_distance: str = "euclidean",  # "euclidean" | "mahalanobis" (FS-Mol paper default)
+    model=None,                        # if None, build PrototypicalNetworkClassification(encoder)
+    model_config: dict | None = None,  # extra config saved in checkpoint (e.g. context model args)
 ):
     """
     Epoch-based episodic training for PrototypicalNetworkClassification (BCE loss).
@@ -148,7 +162,10 @@ def pretrain_classification(
         use_binary_labels=True,   # classification always trains with pre-binarised ChEMBL labels
     )
 
-    model     = PrototypicalNetworkClassification(encoder).to(device)
+    if model is None:
+        model = PrototypicalNetworkClassification(encoder).to(device)
+    else:
+        model = model.to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     use_amp   = (device.type == "cuda")
     amp_dtype = (torch.bfloat16
@@ -159,11 +176,15 @@ def pretrain_classification(
     encoder_cfg         = _encoder_config(encoder)
     best_val_dauprc     = -float("inf")
     no_improve          = 0
-    early_stop_patience = 50 if is_gnn else 25
+    is_prebuilt_ds      = not isinstance(train_assays, list)
+    # MIC (prebuilt) always uses patience=25; fsmol+GNN uses 50 (large dataset, slow convergence)
+    early_stop_patience = 25 if is_prebuilt_ds else (50 if is_gnn else 25)
 
     print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}  |  "
           f"training_split: {training_split}  |  train_distance: {train_distance}")
-    print(f"  Train files: {len(train_assays)}  |  Val files: {len(val_assays)}")
+    _tr_desc = f"{len(train_assays)} files" if isinstance(train_assays, list) else f"{len(train_assays)} episodes/epoch"
+    _va_desc = f"{len(val_assays)} files"   if isinstance(val_assays,   list) else f"{len(val_assays)} episodes/epoch"
+    print(f"  Train: {_tr_desc}  |  Val: {_va_desc}")
     print(f"  Episodes/epoch: {n_episodes_train}  |  Steps/epoch: ~{n_episodes_train // tasks_per_batch}")
 
     for epoch in range(1, n_epochs + 1):
@@ -234,17 +255,19 @@ def pretrain_classification(
         if val_dauprc > best_val_dauprc:
             best_val_dauprc = val_dauprc
             no_improve      = 0
+            saved_model_type = (model_config or {}).get("model_type", "classification")
             torch.save({
                 "epoch":               epoch,
                 "model_state_dict":    model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "val_delta_auprc":     best_val_dauprc,
                 "config": {
-                    "model_type":      "classification",
+                    "model_type":      saved_model_type,
                     "n_support":       n_support,
                     "training_split":  training_split,
                     "train_distance":  train_distance,
                     **encoder_cfg,
+                    **(model_config or {}),
                 },
             }, save_path)
             print(f"  → Saved best model (Val ΔAUPRC: {best_val_dauprc:+.4f})")
@@ -265,8 +288,8 @@ def pretrain_classification(
 
 def pretrain_regression(
     encoder,
-    train_assays: list[str],
-    val_assays: list[str],
+    train_assays,   # list[str] file paths OR pre-built Dataset
+    val_assays,     # list[str] file paths OR pre-built Dataset
     n_epochs: int = 100,
     tasks_per_batch: int = 16,
     n_support: Union[int, list] = 64,  # fixed int or list[int] drawn per episode
@@ -306,10 +329,13 @@ def pretrain_regression(
     encoder_cfg         = _encoder_config(encoder)
     best_val_rmse       = float("inf")
     no_improve          = 0
-    early_stop_patience = 50 if is_gnn else 25
+    is_prebuilt_ds      = not isinstance(train_assays, list)
+    early_stop_patience = 25 if is_prebuilt_ds else (50 if is_gnn else 25)
 
     print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}  |  training_split: {training_split}")
-    print(f"  Train files: {len(train_assays)}  |  Val files: {len(val_assays)}")
+    _tr_desc = f"{len(train_assays)} files" if isinstance(train_assays, list) else f"{len(train_assays)} episodes/epoch"
+    _va_desc = f"{len(val_assays)} files"   if isinstance(val_assays,   list) else f"{len(val_assays)} episodes/epoch"
+    print(f"  Train: {_tr_desc}  |  Val: {_va_desc}")
 
     for epoch in range(1, n_epochs + 1):
         # ------------------------------------------------------------------

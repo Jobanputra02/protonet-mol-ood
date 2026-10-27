@@ -219,6 +219,37 @@ def smiles_to_fsmol_graph(smiles: str) -> Optional["Data"]:
                    ecfp=ecfp_t, descriptors=desc_t)
 
 
+def compute_mic_degree_histogram(store, n_sample: int = 500,
+                                 max_degree: int = 10) -> "torch.Tensor":
+    """
+    Degree histogram for FSMolGNNEncoder PNA scalers, computed from a MicAssayStore.
+    Samples n_sample assays and a few SMILES per assay for efficiency.
+    """
+    import torch
+    import random
+    from torch_geometric.utils import degree as pyg_degree
+
+    deg = torch.zeros(max_degree + 1, dtype=torch.long)
+    assay_ids = list(store.assay_datasets.keys())
+    sampled_ids = random.sample(assay_ids, min(n_sample, len(assay_ids)))
+
+    n_mols = 0
+    for aid in sampled_ids:
+        ds = store.assay_datasets[aid]
+        smiles = random.sample(ds.scaffolds, min(5, len(ds.scaffolds)))
+        for smi in smiles:
+            data = smiles_to_fsmol_graph(smi)
+            if data is None or data.edge_index.shape[1] == 0:
+                continue
+            d = pyg_degree(data.edge_index[1], num_nodes=data.num_nodes, dtype=torch.long)
+            d_clamped = d.clamp(max=max_degree)
+            deg += torch.bincount(d_clamped, minlength=max_degree + 1)
+            n_mols += 1
+
+    print(f"  MIC degree histogram over {n_mols} molecules ({len(sampled_ids)} assays).")
+    return deg
+
+
 def compute_fsmol_degree_histogram(assay_files: list[str], n_sample: int = 500,
                                    max_degree: int = 10) -> "torch.Tensor":
     """

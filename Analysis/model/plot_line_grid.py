@@ -50,11 +50,11 @@ ECFP_HEADS = [
     # "ecfp_logreg",
     # "ecfp_proto_euclid",
     # "ecfp_proto_tanimoto",
-    "ecfp_gp_tanimoto",
+    # "ecfp_gp_tanimoto",
     ]
 EMB_HEADS  = [
     "emb_proto_mahalanobis",
-    "emb_proto_euclid",
+    # "emb_proto_euclid",
     # "emb_logreg",
     # "emb_knn"
     ]
@@ -64,9 +64,9 @@ HEADS = ECFP_HEADS + EMB_HEADS          # change to ECFP_HEADS, EMB_HEADS, or EC
 # Pick any subset of: "random", "scaffold", "size"
 EVAL_SPLITS = [
     "random",
-    # "scaffold",
-    # "similarity",
-    # "size",
+    "scaffold",
+    "similarity",
+    "size",
     ]
 
 # Error bar mode:
@@ -136,32 +136,25 @@ if base_df is None:
     print(f"[WARN] No baselines CSV at {base_csv} - ECFP heads will be absent.")
 
 dfs = []
-if EMB_HEADS:
-    for seed in SEEDS:
-        tag = make_run_tag(ENCODER, "classification", TRAINING_SPLIT, TRAIN_DISTANCE, N_SUPPORT, seed)
-        csv = os.path.join(run_csv_dir(tag), "fsmol_test.csv")
-        if not os.path.exists(csv):
-            print(f"[WARN] Missing: {csv}")
-            continue
-        df = pd.read_csv(csv)
-        df["seed"] = seed
-        if base_df is not None:
-            b = base_df.copy(); b["seed"] = seed
-            df = pd.concat([df, b], ignore_index=True)
-        dfs.append(df)
-    if not dfs:
-        raise FileNotFoundError(f"No fsmol_test.csv found for ENCODER={ENCODER} TRAINING_SPLIT={TRAINING_SPLIT} seeds={SEEDS}")
-    run_tag = make_run_tag(ENCODER, "classification", TRAINING_SPLIT, TRAIN_DISTANCE, N_SUPPORT, SEEDS[0])
-else:
-    # ECFP-only mode: no model needed, load baselines directly
-    if base_df is None:
-        raise FileNotFoundError(f"No baselines CSV at {base_csv}")
-    base_df["seed"] = 0
-    dfs = [base_df]
-    run_tag = "baselines"
+for seed in SEEDS:
+    tag = make_run_tag(ENCODER, "classification", TRAINING_SPLIT, TRAIN_DISTANCE, N_SUPPORT, seed)
+    csv = os.path.join(run_csv_dir(tag), "fsmol_test.csv")
+    if not os.path.exists(csv):
+        print(f"[WARN] Missing: {csv}")
+        continue
+    df = pd.read_csv(csv)
+    df["seed"] = seed
+    if base_df is not None:
+        b = base_df.copy(); b["seed"] = seed
+        df = pd.concat([df, b], ignore_index=True)
+    dfs.append(df)
+
+run_tag = make_run_tag(ENCODER, "classification", TRAINING_SPLIT, TRAIN_DISTANCE, N_SUPPORT, SEEDS[0])
+if not dfs:
+    raise FileNotFoundError(f"No fsmol_test.csv found for ENCODER={ENCODER} TRAINING_SPLIT={TRAINING_SPLIT} seeds={SEEDS}")
 
 combined = pd.concat(dfs, ignore_index=True)
-print(f"Loaded {len(dfs)} seed(s) | run_tag={run_tag}")
+print(f"Loaded {len(dfs)} seed(s) for {run_tag}")
 
 # ── Compute mean +/- std ─────────────────────────────────────────────────────
 records = []

@@ -23,19 +23,17 @@ Output layout (per run_tag):
 """
 import os
 
-ENV = "local"      # "local" | "server"
+# Auto-detect: if /netscratch exists we're on the Pegasus cluster, otherwise local.
+ENV = "server" if os.path.exists("/netscratch") else "local"
 
 if ENV == "local":
     FSMOL_DIR   = "D:/Thesis/PTN/data/fsmol"
     DRUGOOD_DIR = "D:/Thesis/PTN/data/drugood"
     REPO_ROOT   = "D:/Thesis/PTN"
 else:
-    FSMOL_DIR   = "/home/chjo00006/PTN/data/fsmol"
-    DRUGOOD_DIR = "/home/chjo00006/PTN/data/drugood"
-    REPO_ROOT   = "/home/chjo00006/PTN"
-# FSMOL_DIR   = "/netscratch/jobanputra/PTN/data/fsmol"
-# DRUGOOD_DIR = "/netscratch/jobanputra/PTN/data/drugood"
-# REPO_ROOT   = "/netscratch/jobanputra/PTN"
+    FSMOL_DIR   = "/netscratch/jobanputra/PTN/data/fsmol"
+    DRUGOOD_DIR = "/netscratch/jobanputra/PTN/data/drugood"
+    REPO_ROOT   = "/netscratch/jobanputra/PTN"
 FSMOL_TRAIN = os.path.join(FSMOL_DIR, "train")
 FSMOL_VAL   = os.path.join(FSMOL_DIR, "valid")
 FSMOL_TEST  = os.path.join(FSMOL_DIR, "test")

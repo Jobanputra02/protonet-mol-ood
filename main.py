@@ -33,13 +33,13 @@ from evaluate import (evaluate_fsmol_test_grid, evaluate_drugood_multiscale,
 # =============================================================================
 # CONFIG
 # =============================================================================
+ENCODER         = "ecfp"              # "ecfp" | "gnn"
 MODEL_HEAD      = "classification"   # "regression" | "classification"
-ENCODER         = "gnn"              # "ecfp" | "gnn"
-TRAINING_SPLIT  = "random"           # "random" | "scaffold" | "similarity"  (episode construction)
-TRAIN_DISTANCE  = "euclidean"        # "euclidean" | "mahalanobis" (FS-Mol paper default — test both)
-N_SUPPORT       = [16, 32, 64, 128, 256]  # int OR list[int] — list = random per episode
+TRAINING_SPLIT  = "scaffold"           # "random" | "scaffold" | "similarity"  (episode construction)
+TRAIN_DISTANCE  = "euclidean"      # "euclidean" | "mahalanobis" (FS-Mol paper default - test both)
+N_SUPPORT       = 64       # int OR list[int] - list = random per episode
 SEED            = 0                  # any but 0 | 1 | 2 suggested
-SKIP_TRAINING   = False              # False = train ; True = use an existing model
+SKIP_TRAINING   = False              # False = train ; True = use an existing model (just evaluate the heads)
 
 # Model-free baseline heads on raw ECFP fingerprints (comment all to skip):
 ECFP_HEADS = [
@@ -61,7 +61,7 @@ BENCHMARKS    = ("fsmol_test", "drugood")   # any subset; drugood uses the model
 SPLITS        = ("random", "scaffold", "similarity", "size")
 SUPPORT_SIZES = (16, 32, 64, 128, 256, 512)
 N_REPEATS     = 5
-# Scaffold-OOD grouping is Butina@0.70 — fixed design choice (see config.py).
+# Scaffold-OOD grouping is Butina@0.70 - fixed design choice (see config.py).
 # =============================================================================
 
 
@@ -71,7 +71,7 @@ def _assay_files(split_dir: str) -> list[str]:
 
 
 def _print_fsmol_summary(df, label: str) -> None:
-    """Print mean ΔAUPRC + AUROC per split_type × support_size (and N assays)."""
+    """Print mean ΔAUPRC + AUROC per split_type x support_size (and N assays)."""
     print(f"\n=== FS-Mol test summary [{label}] ===")
     for split in sorted(df["split_type"].unique()):
         sub = df[df["split_type"] == split]

@@ -323,9 +323,27 @@ def _load_model_from_checkpoint(
     model_type = config.get("model_type", "regression")
 
     encoder = _build_encoder_from_config(config, device)
-    cls     = PrototypicalNetworkClassification if model_type == "classification" \
-              else PrototypicalNetworkRegression
-    model   = cls(encoder).to(device)
+    if model_type == "context_attention":
+        from context_model import CrossAttentionProtoNet
+        enc_dim = config.get("encoder_output_dim", 256)
+        model = CrossAttentionProtoNet(
+            encoder,
+            encoder_output_dim=enc_dim,
+            d_attn=config.get("d_attn", 256),
+            d_label=config.get("d_label", 16),
+            n_heads=config.get("n_heads", 4),
+            n_self_layers=config.get("n_self_layers", 1),
+            n_cross_layers=config.get("n_cross_layers", 1),
+            mlp_f_hidden=config.get("mlp_f_hidden", 256),
+            dropout=config.get("dropout", 0.1),
+            use_ffn=config.get("use_ffn", False),
+            query_label_mode=config.get("query_label_mode", "unknown_token"),
+            use_nested_tensors=config.get("use_nested_tensors", False),
+        ).to(device)
+    else:
+        cls   = PrototypicalNetworkClassification if model_type == "classification" \
+                else PrototypicalNetworkRegression
+        model = cls(encoder).to(device)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     if model_type == "classification":
@@ -587,10 +605,13 @@ def evaluate_fsmol_test_grid(
         head_names = list(FSMOL_HEAD_REGISTRY.keys())
     need_emb = any(FSMOL_HEAD_REGISTRY[h][1] == "embedding" for h in head_names)
     gnn = False
+    is_ctx_attn = False
     if need_emb:
         if model is None:
             raise ValueError("emb heads requested but model is None.")
         gnn = _is_gnn(model)
+        from context_model import CrossAttentionProtoNet
+        is_ctx_attn = isinstance(_unwrap(model), CrossAttentionProtoNet)
     need_sizes      = "size"       in splits
     need_similarity = "similarity" in splits
     # Seed hash per split type — kept stable so results are reproducible across runs.
@@ -635,10 +656,31 @@ def evaluate_fsmol_test_grid(
                         continue
                     ys, yq = y_all[s_idx], y_all[q_idx]
                     qsim = _mean_max_tanimoto(F_all[s_idx], F_all[q_idx])
+
+                    # For CrossAttentionProtoNet: enrich embeddings with label context +
+                    # self-attention + cross-attention once per episode, then reuse for
+                    # all emb_* heads.  Raw encoder outputs (E_all) are not meaningful
+                    # inputs for PN-E/PN-M on attention models — the encoder was trained
+                    # to produce representations that go through MLP_F + attention first.
+                    if is_ctx_attn and E_all is not None:
+                        sup_t = torch.tensor(E_all[s_idx], dtype=torch.float32).to(device)
+                        qry_t = torch.tensor(E_all[q_idx], dtype=torch.float32).to(device)
+                        ys_t  = torch.tensor(ys, dtype=torch.float32).to(device)
+                        with torch.no_grad():
+                            ctx_sup, ctx_qry = _unwrap(model).get_enriched_embeddings(
+                                sup_t, ys_t, qry_t)
+                        C_sup = ctx_sup.cpu().numpy()
+                        C_qry = ctx_qry.cpu().numpy()
+                    else:
+                        C_sup = E_all[s_idx] if E_all is not None else None
+                        C_qry = E_all[q_idx] if E_all is not None else None
+
                     for head in head_names:
                         fn, rep_repr = FSMOL_HEAD_REGISTRY[head]
-                        p = (fn(F_all[s_idx], ys, F_all[q_idx]) if rep_repr == "ecfp"
-                             else fn(E_all[s_idx], ys, E_all[q_idx]))
+                        if rep_repr == "ecfp":
+                            p = fn(F_all[s_idx], ys, F_all[q_idx])
+                        else:
+                            p = fn(C_sup, ys, C_qry)
                         rows.append({
                             "assay_id": assay.assay_id, "split_type": split,
                             "support_size": n_sup, "support_actual": int(len(s_idx)),
