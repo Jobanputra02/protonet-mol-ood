@@ -302,14 +302,19 @@ class PrototypicalNetworkClassification(nn.Module):
         proto_inactive = sup_emb[~active_mask].mean(dim=0)
         protos   = torch.stack([proto_active, proto_inactive], dim=0)
         dists    = _mahalanobis_dists(qry_emb, protos, sup_emb, active_mask)
-        p_active = F.softmax(-dists, dim=1)[:, 0]
-        return p_active
+        return torch.sigmoid(dists[:, 1] - dists[:, 0])
 
-    def forward_batched(
+    def _forward_logits_batched(
         self, support_input, support_labels: torch.Tensor, query_input,
         train_distance: str = "euclidean",
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """
+        """Episode logits, i.e. the log-odds of "active".
+
+        The logit is (d_inactive - d_active). Its sigmoid equals the softmax over
+        [-d_active, -d_inactive] that this head used to return directly, so predictions
+        are unchanged. Keeping the logit un-squashed is what makes the loss numerically
+        safe - see compute_loss_batched.
+
         Args:
             support_input:   Tensor(B, n_sup, D) or PyG Batch(B*n_sup graphs)
             support_labels:  Tensor(B, n_sup)
@@ -317,7 +322,7 @@ class PrototypicalNetworkClassification(nn.Module):
             train_distance:  "euclidean" (vectorised, default) or "mahalanobis"
                              (per-episode loop, matches FS-Mol paper training protocol)
         Returns:
-            p_active:   Tensor(B, n_qry)
+            logits:     Tensor(B, n_qry)  - 0 for degenerate episodes
             valid_mask: BoolTensor(B,) - False for degenerate (all-one-class) episodes
         """
         B, n_sup = support_labels.shape
@@ -348,26 +353,40 @@ class PrototypicalNetworkClassification(nn.Module):
             p_list = []
             for b in range(B):
                 if not valid_mask[b]:
-                    p_list.append(torch.full((n_qry,), 0.5, device=sup_emb.device))
+                    p_list.append(torch.zeros(n_qry, device=sup_emb.device))
                     continue
                 protos_b = torch.stack([proto_active[b], proto_inactive[b]], dim=0)
                 dists_b  = _mahalanobis_dists(
                     qry_emb[b], protos_b, sup_emb[b], active_mask[b]
                 )  # (n_qry, 2)
-                p_list.append(F.softmax(-dists_b, dim=1)[:, 0])
-            p_active = torch.stack(p_list, dim=0)  # (B, n_qry)
+                p_list.append(dists_b[:, 1] - dists_b[:, 0])
+            logits = torch.stack(p_list, dim=0)  # (B, n_qry)
         else:
             # Euclidean: fully vectorised.
             diff_a = qry_emb - proto_active.unsqueeze(1)    # (B, n_qry, D)
             diff_i = qry_emb - proto_inactive.unsqueeze(1)  # (B, n_qry, D)
             d_active   = (diff_a ** 2).sum(dim=-1)          # (B, n_qry)
             d_inactive = (diff_i ** 2).sum(dim=-1)          # (B, n_qry)
-            dists    = torch.stack([d_active, d_inactive], dim=-1)  # (B, n_qry, 2)
-            p_active = F.softmax(-dists, dim=-1)[..., 0]            # (B, n_qry)
+            logits = d_inactive - d_active                          # (B, n_qry)
 
-        p_active = torch.where(valid_mask.unsqueeze(1), p_active,
-                               torch.full_like(p_active, 0.5))
-        return p_active, valid_mask
+        # Degenerate episodes get logit 0, i.e. probability 0.5.
+        logits = torch.where(valid_mask.unsqueeze(1), logits,
+                             torch.zeros_like(logits))
+        return logits, valid_mask
+
+    def forward_batched(
+        self, support_input, support_labels: torch.Tensor, query_input,
+        train_distance: str = "euclidean",
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """P(active) per query, plus the per-episode validity mask.
+
+        Returns exactly what this method always returned. The probability is now
+        derived from the logit rather than from a softmax - the same number, computed
+        once instead of twice.
+        """
+        logits, valid_mask = self._forward_logits_batched(
+            support_input, support_labels, query_input, train_distance=train_distance)
+        return torch.sigmoid(logits), valid_mask
 
     def predict_from_embeddings(
         self, sup_emb: torch.Tensor, sup_labels: torch.Tensor, qry_emb: torch.Tensor,
@@ -391,7 +410,7 @@ class PrototypicalNetworkClassification(nn.Module):
             dists = torch.stack([d_active, d_inactive], dim=-1)
         else:
             dists = _mahalanobis_dists(qry_emb, protos, sup_emb, active_mask)
-        return F.softmax(-dists, dim=1)[:, 0]
+        return torch.sigmoid(dists[:, 1] - dists[:, 0])
 
     # ------------------------------------------------------------------
     # Loss (used by training loop)
@@ -417,7 +436,7 @@ class PrototypicalNetworkClassification(nn.Module):
             loss:    scalar BCE over valid episodes
             metrics: {"delta_auprc": float}
         """
-        p_active, valid_mask = self.forward_batched(
+        logits, valid_mask = self._forward_logits_batched(
             support_input, support_labels, query_input, train_distance=train_distance
         )
 
@@ -425,15 +444,24 @@ class PrototypicalNetworkClassification(nn.Module):
         binary_query = (query_labels > 0.5).float()  # (B, n_query)
 
         if not valid_mask.any():
-            return torch.tensor(0.0, device=p_active.device, requires_grad=True), {"delta_auprc": float("nan")}
+            return torch.tensor(0.0, device=logits.device, requires_grad=True), {"delta_auprc": float("nan")}
 
-        # BCE only over valid (non-degenerate) episodes.
-        # F.binary_cross_entropy is blocked by autocast at the C++ level regardless of dtype,
-        # so compute it manually - mathematically identical, autocast-safe.
-        p_valid = p_active[valid_mask].float()       # (V, n_query)
+        # BCE over valid (non-degenerate) episodes, computed from logits.
+        #
+        # Why from logits: the previous version squashed to a probability first and then
+        # did `p.clamp(1e-7, 1-1e-7).log()`. clamp has ZERO gradient outside its bounds,
+        # so once the softmax saturated - a prototype-distance gap of only ~20 under
+        # fp16 AMP, ~90 in fp32 - a *confidently wrong* prediction produced no gradient
+        # at all and the model could not recover. That is the signature of the runs that
+        # sat at BCE ~ 6.4 with dAUPRC = 0.000 (TASKS.md 2.8).
+        # binary_cross_entropy_with_logits is mathematically the same loss but uses the
+        # log-sum-exp trick, so a confidently wrong prediction still yields a gradient of
+        # magnitude 1. Predictions are unchanged; only the gradients are fixed.
+        # It is also autocast-safe, unlike F.binary_cross_entropy.
+        l_valid = logits[valid_mask].float()         # (V, n_query)
         b_valid = binary_query[valid_mask].float()   # (V, n_query)
-        p_clamped = p_valid.clamp(1e-7, 1 - 1e-7)
-        loss = -(b_valid * p_clamped.log() + (1 - b_valid) * (1 - p_clamped).log()).mean()
+        loss    = F.binary_cross_entropy_with_logits(l_valid, b_valid)
+        p_valid = torch.sigmoid(l_valid)
 
         with torch.no_grad():
             p_np = p_valid.detach().cpu().numpy()

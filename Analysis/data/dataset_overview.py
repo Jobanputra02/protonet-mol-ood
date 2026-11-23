@@ -209,7 +209,7 @@ def print_data_loss_table(df: pd.DataFrame, split_name: str) -> None:
           f"({100*total_invalid/max(total_mols,1):.1f}%)")
     print(f"  -- Dropped (task too small)   : {mols_in_dropped:>10,}  "
           f"({100*mols_in_dropped/max(total_mols,1):.1f}%)")
-    print(f"  {'─'*40}")
+    print(f"  {'-'*40}")
     print(f"  Total lost                    : {total_lost:>10,}  "
           f"({100*total_lost/max(total_mols,1):.1f}%)")
     print(f"  Molecules used                : {mols_in_kept:>10,}  "
@@ -234,7 +234,7 @@ def print_correlation(df: pd.DataFrame) -> None:
         rho, p_rho = stats.spearmanr(sub["n_total"], sub["fraction_exact"])
         print(f"\n  {split}/ ({len(sub):,} assays):")
         print(f"    Pearson  r = {r:+.4f}  (p = {p_r:.3e})")
-        print(f"    Spearman ρ = {rho:+.4f}  (p = {p_rho:.3e})")
+        print(f"    Spearman rho = {rho:+.4f}  (p = {p_rho:.3e})")
         fe = sub["fraction_exact"]
         print(f"    fraction_exact: mean={fe.mean():.3f}, std={fe.std():.3f}, "
               f"range=[{fe.min():.3f}, {fe.max():.3f}]")
@@ -419,7 +419,7 @@ if __name__ == "__main__":
         fpath = os.path.join(DRUGOOD_DIR, fname)
         print(f"  {shift_type}", end=" ", flush=True)
         a_df, d_df = load_drugood_stats(fpath, shift_type)
-        print(f"→ {a_df['assay_id'].nunique()} assays, {d_df['domain_id'].nunique()} domains")
+        print(f"-> {a_df['assay_id'].nunique()} assays, {d_df['domain_id'].nunique()} domains")
         assay_dfs.append(a_df)
         domain_dfs.append(d_df)
     drugood_assay_df  = pd.concat(assay_dfs,  ignore_index=True)
@@ -433,7 +433,7 @@ if __name__ == "__main__":
     print("\nCSVs saved to", RESULTS_DIR)
 
     # ── Summary tables ────────────────────────────────────────────────────────
-    print("\n=== FS-Mol assay size summary (after filtering, ≥32 molecules) ===")
+    print("\n=== FS-Mol assay size summary (after filtering, >=32 molecules) ===")
     print(fsmol_stats_df.groupby("split")["n_exact"].describe().round(1))
 
     print("\n=== DrugOOD per-assay_id size summary ===")

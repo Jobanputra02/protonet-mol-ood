@@ -37,10 +37,23 @@ Thumbs.db
 # Misc
 *.log
 *.tmp
-# *.out
+
+# Cluster job logs. HTCondor writes .out/.err per job into condor/logs/;
+# these are training logs and must never land in the repo.
+condor/logs/*
+!condor/logs/.gitkeep
+*.out
+*.err
+
+# Editor and script backups. NOTE *.md above ignores TASKS.md but NOT
+# TASKS.md.bak, so without this a copy of the private planning doc gets published.
+*.bak
+*.orig
+*~
 
 *.csv
 
 *.md
 outputs_old/
 Thesis Proposal Paper/
+condor/

@@ -34,6 +34,7 @@ TRAIN_DISTANCE = "euclidean"        # "euclidean" | "mahalanobis"
 N_SUPPORT      = 64                 # int  OR  list[int] e.g. [16, 32, 64]
 SEED           = 0
 SKIP_TRAINING  = False
+N_EPOCHS       = 100                # max epochs; early stopping decides actual length
 
 # ── Dataset ───────────────────────────────────────────────────────────────────
 # "fsmol"       : 26,868 train assays from FS-Mol (established benchmark)
@@ -95,9 +96,22 @@ N_REPEATS     = 5
 # =============================================================================
 
 
-def _assay_files(split_dir):
-    return sorted(os.path.join(split_dir, f)
-                  for f in os.listdir(split_dir) if f.endswith(".jsonl.gz"))
+FSMOL_TASKS = "benchmark"   # "benchmark" (4,938 official) | "all" (26,868 raw pool)
+
+
+def _assay_files(split_dir, split_name=None):
+    """List assay files, restricted to the official FS-Mol task list by default.
+
+    FS-Mol ships 26,868 train tasks but the benchmark defines 4,938 (config.py).
+    Using all of them is a documented FS-Mol option, but the extra 21,930 are
+    unfiltered and the results are not comparable to published FS-Mol baselines.
+    """
+    files = sorted(os.path.join(split_dir, f)
+                   for f in os.listdir(split_dir) if f.endswith(".jsonl.gz"))
+    if FSMOL_TASKS == "benchmark" and split_name:
+        from data import filter_to_benchmark
+        files = filter_to_benchmark(files, split_name)
+    return files
 
 
 def _build_encoder(train_data):
@@ -114,7 +128,7 @@ def _build_encoder(train_data):
 def _get_train_val_data():
     """Return (train_data, val_data) — either file lists (FS-Mol) or MicEpisodeDatsets."""
     if DATASET == "fsmol":
-        return _assay_files(FSMOL_TRAIN), _assay_files(FSMOL_VAL)
+        return _assay_files(FSMOL_TRAIN, "train"), _assay_files(FSMOL_VAL, "valid")
     # MIC path
     from mic_loader import MicAssayStore, MicEpisodeDataset, MicGraphEpisodeDataset, load_mic_split
     splits_json = _MIC_SPLITS_JSONS[DATASET]
@@ -153,22 +167,43 @@ if __name__ == "__main__":
     _p.add_argument("--mic_split",      default=MIC_SPLIT,      choices=["A","B","C","D","E"])
     _p.add_argument("--encoder",        default=ENCODER,        choices=["ecfp","gnn"])
     _p.add_argument("--training_split", default=TRAINING_SPLIT, choices=["random","scaffold","similarity"])
-    _p.add_argument("--n_support",      default=N_SUPPORT,      type=int)
+    def _n_support(v):
+        for sep in ("+", ","):          # "+" avoids embedding a comma in a
+            if sep in v:               # comma-delimited Condor queue row
+                return [int(x) for x in v.split(sep)]
+        return int(v)
+
+    _p.add_argument("--n_support",      default=N_SUPPORT,      type=_n_support,
+                    help='int, or a comma list such as "16,32,64"')
     _p.add_argument("--seed",           default=SEED,           type=int)
+    # Max epochs. train.py early-stops on val dAUPRC (patience 50 for fsmol+GNN) and
+    # keeps the best-val checkpoint, so this is a CAP, not a target. See TASKS.md 2.13.4.
+    _p.add_argument("--n_epochs",       default=N_EPOCHS,       type=int)
     _p.add_argument("--skip_training",  action="store_true",    default=SKIP_TRAINING)
+    _p.add_argument("--fsmol_tasks",    default=FSMOL_TASKS, choices=["benchmark", "all"],
+                    help="benchmark = the official 4,938-task list (see config.py)")
+    _p.add_argument("--dry_run", action="store_true",
+                    help="print the resolved configuration and exit, touching no data")
     _a = _p.parse_args()
     DATASET        = _a.dataset
     MIC_SPLIT      = _a.mic_split
     ENCODER        = _a.encoder
     TRAINING_SPLIT = _a.training_split
+    N_EPOCHS       = _a.n_epochs
     N_SUPPORT      = _a.n_support
     SEED           = _a.seed
     SKIP_TRAINING  = _a.skip_training
+    FSMOL_TASKS    = _a.fsmol_tasks
 
     ecfp_heads = list(ECFP_HEADS)
     emb_heads  = list(EMB_HEADS)
     device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     run_tag    = make_run_tag(ENCODER, MODEL_HEAD, TRAINING_SPLIT, TRAIN_DISTANCE, N_SUPPORT, SEED)
+    # A different epoch cap is a different experiment and must not overwrite the
+    # 100-epoch screening results (TASKS.md 2.13.4). Appended rather than folded into
+    # make_run_tag so the default tag stays byte-identical for Analysis/model/*.py.
+    if N_EPOCHS != 100:
+        run_tag += f"_ep{N_EPOCHS}"
     if DATASET == "fsmol":
         ckpt_dir = run_ckpt_dir(run_tag)
     else:
@@ -176,6 +211,14 @@ if __name__ == "__main__":
     save_path  = os.path.join(ckpt_dir, "model.pt")
 
     print(f"main_ptn.py | dataset={DATASET}  mic_split={MIC_SPLIT}  {run_tag}")
+    print(f"  fsmol_tasks={FSMOL_TASKS}")
+    print(f"  checkpoint -> {save_path}")
+
+    if _a.dry_run:
+        # Validate the configuration without touching data or the GPU, so a Condor
+        # grid row can be checked before submission (tests/validate_condor_grid.py).
+        print("dry run OK - configuration is valid, nothing was trained")
+        raise SystemExit(0)
 
     test_assays = None
     if DATASET == "fsmol" and "fsmol_test" in BENCHMARKS and (emb_heads or ecfp_heads):
@@ -190,7 +233,7 @@ if __name__ == "__main__":
         os.makedirs(ckpt_dir, exist_ok=True)
         model = pretrain_fn(
             encoder, train_assays=train_data, val_assays=val_data,
-            n_epochs=100, tasks_per_batch=16, n_support=N_SUPPORT, n_query=256,
+            n_epochs=N_EPOCHS, tasks_per_batch=16, n_support=N_SUPPORT, n_query=256,
             n_episodes_train=1600, n_episodes_val=200, lr=lr,
             save_path=save_path, training_split=TRAINING_SPLIT, seed=SEED,
             train_distance=TRAIN_DISTANCE,
@@ -210,7 +253,7 @@ if __name__ == "__main__":
                 n_repeats=N_REPEATS, head_names=emb_heads)
             fsmol_csv = os.path.join(csv_dir, "fsmol_test.csv")
             df.to_csv(fsmol_csv, index=False)
-            _print_summary(df, f"{run_tag} · emb")
+            _print_summary(df, f"{run_tag} | emb")
             print(f"  saved -> {fsmol_csv}")
 
         if "drugood" in BENCHMARKS and DATASET == "fsmol":

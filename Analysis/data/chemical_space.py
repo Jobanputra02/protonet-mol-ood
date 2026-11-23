@@ -242,7 +242,7 @@ def run_molecular_properties(
 
     out_csv = os.path.join(RESULTS_DIR, "structural_var_comparison.csv")
     comparison.to_csv(out_csv)
-    print(f"\nSaved → {out_csv}")
+    print(f"\nSaved -> {out_csv}")
 
     # ── Violin figure: 4 properties × 4 datasets ──────────────────────────────
     fig, axes = plt.subplots(1, len(numeric_cols), figsize=(13, 5))
@@ -277,7 +277,7 @@ def run_molecular_properties(
     out_fig = os.path.join(FIGURES_DIR, "chemical_space_properties.png")
     plt.savefig(out_fig, dpi=180, bbox_inches="tight")
     plt.close()
-    print(f"Saved → {out_fig}")
+    print(f"Saved -> {out_fig}")
 
 
 # =============================================================================

@@ -92,6 +92,18 @@ def _build_encoder(train_files: list[str]):
 
 
 if __name__ == "__main__":
+    # This script is configured by the CONFIG block above, not by flags. Without this
+    # guard an unrecognised argument is silently ignored and a full FS-Mol training run
+    # starts anyway — on the cluster that burns a job slot before anyone notices.
+    # main_ptn.py and main_attention.py are the flag-driven entry points.
+    import argparse as _argparse
+    _argparse.ArgumentParser(
+        description=("Run the combined FS-Mol PTN train+evaluate pipeline. Takes no "
+                     "arguments: edit the CONFIG block at the top of this file. For a "
+                     "command-line interface use main_ptn.py (PTN) or "
+                     "main_attention.py (cross-attention model).")
+    ).parse_args()
+
     ecfp_heads = list(ECFP_HEADS)
     emb_heads  = list(EMB_HEADS)
     device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -139,7 +151,7 @@ if __name__ == "__main__":
                 n_repeats=N_REPEATS, head_names=emb_heads)
             fsmol_csv = os.path.join(csv_dir, "fsmol_test.csv")
             df.to_csv(fsmol_csv, index=False)
-            _print_fsmol_summary(df, f"{run_tag} · emb")
+            _print_fsmol_summary(df, f"{run_tag} | emb")
             print(f"  saved -> {fsmol_csv}")
 
         if "drugood" in BENCHMARKS:

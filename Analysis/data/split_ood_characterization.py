@@ -339,7 +339,7 @@ if __name__ == "__main__":
     print("SPLIT OOD CHARACTERIZATION  (lower = more OOD for all three similarity columns)")
     print("  nn_top1   : each query's nearest support mol (original metric)")
     print("  nn_top3   : each query's mean of 3 nearest support mols")
-    print("  mean_all  : mean over all (query, support) pairs — most stable")
+    print("  mean_all  : mean over all (query, support) pairs - most stable")
     print("=" * 100)
     print(summary.to_string(index=False))
 

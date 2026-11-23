@@ -14,6 +14,7 @@ would fail collation. Gradient accumulation over tasks_per_batch passes produces
 the same effective gradient as a single batched forward pass over tasks_per_batch.
 """
 
+import os
 import random
 from typing import Union
 import torch
@@ -51,6 +52,31 @@ def _encoder_config(encoder) -> dict:
             "hidden_dim":    encoder.network[0].out_features,
             "embedding_dim": encoder.network[-1].out_features,
         }
+
+
+def _num_workers(default: int) -> int:
+    """DataLoader worker count, overridable with the PTN_NUM_WORKERS env var.
+
+    Defaults are unchanged (6 train / 2 val for the streaming FS-Mol path, 0 for a
+    pre-built in-RAM dataset). Two reasons to override:
+      - On Condor, set it to match `request_cpus`; oversubscribing starves the job.
+      - On Windows, multiprocessing uses spawn rather than fork, so each worker loads
+        its own copy of torch and its CUDA DLLs; six of them exhaust the paging file
+        and die on startup. PTN_NUM_WORKERS=0 is the only way to run locally.
+
+    A pre-built in-RAM dataset (the MIC path) always stays at 0 workers regardless of
+    the override: spawn would copy the whole assay store into every worker.
+    """
+    if default == 0:
+        return 0
+    v = os.environ.get("PTN_NUM_WORKERS")
+    if v is None or not v.strip():
+        return default
+    try:
+        return max(0, int(v))
+    except ValueError:
+        print(f"  [warn] PTN_NUM_WORKERS={v!r} is not an integer - using {default}")
+        return default
 
 
 def _worker_init_fn(worker_id: int) -> None:
@@ -96,21 +122,23 @@ def _make_loaders(encoder, train_files, val_files,
 
     # batch_size=1 for all encoders - variable query sizes prevent larger batches.
     # Gradient accumulation over tasks_per_batch passes gives same effective gradient.
+    n_tr = _num_workers(0 if is_prebuilt else 6)
+    n_va = _num_workers(0 if is_prebuilt else 2)
     train_loader = DataLoader(
         train_dataset, batch_size=1, shuffle=False,
-        num_workers=0 if is_prebuilt else 6,
+        num_workers=n_tr,
         pin_memory=not is_gnn,
-        prefetch_factor=None if is_prebuilt else 4,
+        prefetch_factor=None if n_tr == 0 else 4,
         collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
-        persistent_workers=False if is_prebuilt else True,
+        persistent_workers=n_tr > 0,
     )
     val_loader = DataLoader(
         val_dataset, batch_size=1, shuffle=False,
-        num_workers=0 if is_prebuilt else 2,
+        num_workers=n_va,
         pin_memory=not is_gnn,
-        prefetch_factor=None if is_prebuilt else 2,
+        prefetch_factor=None if n_va == 0 else 2,
         collate_fn=collate_fn, worker_init_fn=_worker_init_fn,
-        persistent_workers=False if is_prebuilt else True,
+        persistent_workers=n_va > 0,
     )
     return train_loader, val_loader
 
@@ -142,6 +170,15 @@ def pretrain_classification(
     train_distance: str = "euclidean",  # "euclidean" | "mahalanobis" (FS-Mol paper default)
     model=None,                        # if None, build PrototypicalNetworkClassification(encoder)
     model_config: dict | None = None,  # extra config saved in checkpoint (e.g. context model args)
+    # ── Optimisation stability (TASKS.md §2.8) ────────────────────────────────
+    # Defaults reproduce the previous behaviour exactly: no warmup, clip at 10.0,
+    # one LR for every parameter. Attention models are the reason these exist —
+    # CrossAttentionProtoNet diverged (BCE ≈ 6.4) on curated_mic splits C and D at
+    # lr=1e-3 while the plain PTN trained fine on the same episodes.
+    warmup_steps: int = 0,             # linear LR warmup over this many optimizer steps
+    grad_clip: float = 10.0,           # max grad-norm; <= 0 disables clipping
+    lr_attn: float | None = None,      # separate LR for non-encoder params (attention,
+                                       # MLP_F, label embeddings); None = use `lr`
 ):
     """
     Epoch-based episodic training for PrototypicalNetworkClassification (BCE loss).
@@ -166,7 +203,29 @@ def pretrain_classification(
         model = PrototypicalNetworkClassification(encoder).to(device)
     else:
         model = model.to(device)
-    optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    # Optimizer: optionally a lower LR for the encoder than for the attention stack.
+    if lr_attn is not None and hasattr(model, "encoder"):
+        enc_ids     = {id(p) for p in model.encoder.parameters()}
+        enc_params  = [p for p in model.parameters()
+                       if p.requires_grad and id(p) in enc_ids]
+        head_params = [p for p in model.parameters()
+                       if p.requires_grad and id(p) not in enc_ids]
+        optimizer   = optim.Adam([{"params": enc_params,  "lr": lr},
+                                  {"params": head_params, "lr": lr_attn}])
+        print(f"  Param groups: encoder lr={lr}  |  attention/MLP lr={lr_attn}")
+    else:
+        optimizer = optim.Adam(model.parameters(), lr=lr)
+
+    # Linear warmup. Pre-norm residual blocks tolerate a cold start better than
+    # post-norm ones, so warmup matters most with norm_position="post".
+    if warmup_steps > 0:
+        scheduler = optim.lr_scheduler.LambdaLR(
+            optimizer, lambda s: min(1.0, float(s + 1) / float(warmup_steps)))
+        print(f"  LR warmup: linear over {warmup_steps} optimizer steps")
+    else:
+        scheduler = None
+
     use_amp   = (device.type == "cuda")
     amp_dtype = (torch.bfloat16
                  if use_amp and torch.cuda.is_bf16_supported()
@@ -181,7 +240,8 @@ def pretrain_classification(
     early_stop_patience = 25 if is_prebuilt_ds else (50 if is_gnn else 25)
 
     print(f"  Epochs: {n_epochs}  |  Tasks/step: {tasks_per_batch}  |  LR: {lr}  |  "
-          f"training_split: {training_split}  |  train_distance: {train_distance}")
+          f"training_split: {training_split}  |  train_distance: {train_distance}  |  "
+          f"grad_clip: {grad_clip}")
     _tr_desc = f"{len(train_assays)} files" if isinstance(train_assays, list) else f"{len(train_assays)} episodes/epoch"
     _va_desc = f"{len(val_assays)} files"   if isinstance(val_assays,   list) else f"{len(val_assays)} episodes/epoch"
     print(f"  Train: {_tr_desc}  |  Val: {_va_desc}")
@@ -212,8 +272,11 @@ def pretrain_classification(
                 epoch_dauprc_buf.append(metrics["delta_auprc"])
 
             if accum_count == n_accum:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0)
+                if grad_clip and grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
+                if scheduler is not None:
+                    scheduler.step()
                 optimizer.zero_grad()
                 accum_count = 0
                 step += 1
@@ -245,8 +308,8 @@ def pretrain_classification(
 
         print(
             f"Epoch {epoch:3d}/{n_epochs} | Steps: {step} | "
-            f"Train BCE: {train_loss:.4f} | Train ΔAUPRC: {train_dauprc:+.4f} | "
-            f"Val ΔAUPRC: {val_dauprc:+.4f}"
+            f"Train BCE: {train_loss:.4f} | Train dAUPRC: {train_dauprc:+.4f} | "
+            f"Val dAUPRC: {val_dauprc:+.4f}"
         )
 
         # ------------------------------------------------------------------
@@ -270,7 +333,7 @@ def pretrain_classification(
                     **(model_config or {}),
                 },
             }, save_path)
-            print(f"  → Saved best model (Val ΔAUPRC: {best_val_dauprc:+.4f})")
+            print(f"  -> Saved best model (Val dAUPRC: {best_val_dauprc:+.4f})")
         else:
             no_improve += 1
             if no_improve >= early_stop_patience:
@@ -278,7 +341,7 @@ def pretrain_classification(
                       f"(no improvement for {early_stop_patience} epochs).")
                 break
 
-    print(f"\nPretraining complete. Best Val ΔAUPRC: {best_val_dauprc:+.4f}")
+    print(f"\nPretraining complete. Best Val dAUPRC: {best_val_dauprc:+.4f}")
     return model
 
 
@@ -410,7 +473,7 @@ def pretrain_regression(
                     **encoder_cfg,
                 },
             }, save_path)
-            print(f"  → Saved best model (Val RMSE: {best_val_rmse:.4f})")
+            print(f"  -> Saved best model (Val RMSE: {best_val_rmse:.4f})")
         else:
             no_improve += 1
             if no_improve >= early_stop_patience:

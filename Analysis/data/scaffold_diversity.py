@@ -151,7 +151,7 @@ if __name__ == "__main__":
     combined = pd.concat(dfs, ignore_index=True)
     out_csv  = os.path.join(RESULTS_DIR, "scaffold_diversity_per_task_all_splits.csv")
     combined.to_csv(out_csv, index=False)
-    print(f"\nSaved → {out_csv}")
+    print(f"\nSaved -> {out_csv}")
 
     split_colors   = {"train": "steelblue", "valid": "orange", "test": "tomato"}
     splits_present = [s for s in ("train", "valid", "test") if s in combined["split"].values]
@@ -211,4 +211,4 @@ if __name__ == "__main__":
     out_fig1 = os.path.join(FIGURES_DIR, "fig_scaffold_distributions.png")
     fig1.savefig(out_fig1, dpi=150, bbox_inches="tight")
     plt.close(fig1)
-    print(f"Figure saved → {out_fig1}")
+    print(f"Figure saved -> {out_fig1}")

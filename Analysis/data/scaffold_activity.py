@@ -219,19 +219,19 @@ def main() -> None:
     per_assay_df = pd.DataFrame(per_assay_rows)
     deg_path = os.path.join(DATA_ANALYSIS_RESULTS_DIR, "scaffold_degeneracy.csv")
     per_assay_df.to_csv(deg_path, index=False)
-    print(f"Saved → {deg_path}")
+    print(f"Saved -> {deg_path}")
 
     if mol_rows:
         mol_df   = pd.concat(mol_rows, ignore_index=True)
         mol_path = os.path.join(DATA_ANALYSIS_RESULTS_DIR, "scaffold_context_query.csv")
         mol_df.to_csv(mol_path, index=False)
-        print(f"Saved → {mol_path}  ({len(mol_df):,} molecule rows, "
+        print(f"Saved -> {mol_path}  ({len(mol_df):,} molecule rows, "
               f"{mol_df['assay_id'].nunique()} assays)")
 
     # --- Summary ---
     cv = per_assay_df["cramers_v"].dropna()
     print(f"\n{'='*55}")
-    print(f"Cramér's V  (scaffold → activity label correlation)")
+    print(f"Cramer's V  (scaffold -> activity label correlation)")
     print(f"{'='*55}")
     print(f"  Assays with valid V : {len(cv)}")
     print(f"  mean   : {cv.mean():.4f}")
@@ -263,7 +263,7 @@ def main() -> None:
     fig_path = os.path.join(DATA_ANALYSIS_FIGURES_DIR, "fig_scaffold_activity_corr.png")
     plt.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close()
-    print(f"Figure → {fig_path}")
+    print(f"Figure -> {fig_path}")
 
 
 if __name__ == "__main__":

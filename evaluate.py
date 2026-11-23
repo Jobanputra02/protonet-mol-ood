@@ -19,6 +19,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from model import (PrototypicalNetworkRegression, PrototypicalNetworkClassification,
                    ECFPEncoder, FSMolGNNEncoder, _mahalanobis_dists)
 from data import DrugOODEvalDataset, AssayDataset
+from config import SUPPORT_SAMPLING as _SUPPORT_SAMPLING
 
 
 # =============================================================================
@@ -209,11 +210,13 @@ def evaluate_drugood_multiscale(
                             # regression or when binary labels are unavailable.
                             if is_classif and eval_dataset.context_binary is not None:
                                 from data import stratified_context_indices
-                                # balanced=True: 50/50 active/inactive context so the
-                                # inactive prototype is not built from ~1 molecule
-                                #.
+                                # Composition comes from config.SUPPORT_SAMPLING so
+                                # evaluation matches training. Previously hardcoded to
+                                # 50/50 while training sampled proportionally -
+                                # see TASKS.md 5.2.
                                 idx = stratified_context_indices(
-                                    eval_dataset.context_binary, n_ctx, rng, balanced=True)
+                                    eval_dataset.context_binary, n_ctx, rng,
+                                    balanced=(_SUPPORT_SAMPLING == "balanced"))
                             else:
                                 idx = rng.choice(
                                     len(eval_dataset.context_smiles), size=n_ctx, replace=False)
@@ -258,6 +261,10 @@ def evaluate_drugood_multiscale(
                         "query_set":         query_set,
                         "context_set_size":  context_size,
                         "actual_context_n":  actual_n,
+                        # Recorded so a CSV is self-describing: a proportional run and a
+                        # balanced run are not comparable, and this used to be an
+                        # invisible hardcoded choice. See TASKS.md 5.2.
+                        "support_sampling":  _SUPPORT_SAMPLING,
                         "n_test":            int(len(test_labels)),
                         "n_seeds":           len(seed_metrics),
                         "delta_auprc":       mean_m["delta_auprc"],
@@ -326,6 +333,18 @@ def _load_model_from_checkpoint(
     if model_type == "context_attention":
         from context_model import CrossAttentionProtoNet
         enc_dim = config.get("encoder_output_dim", 256)
+        # Infer the [DC-4] MLP mode from the weights rather than trusting the config:
+        # checkpoints written before the flag existed carry no `separate_mlp_f` key but
+        # do carry a single `mlp_f.*`, and a wrong guess here fails with an opaque
+        # state_dict error instead of a clear one.
+        sd = checkpoint["model_state_dict"]
+        inferred_sep = any(k.startswith("mlp_f_sup.") for k in sd)
+        # [DC-12] same trick: pre-DC-12 checkpoints carry final_norm_sup/_qry.
+        inferred_share = any(k.startswith("final_norm.") for k in sd)
+        cfg_sep = config.get("separate_mlp_f", None)
+        if cfg_sep is not None and bool(cfg_sep) != inferred_sep:
+            print(f"  warning: config says separate_mlp_f={cfg_sep} but the weights say "
+                  f"{inferred_sep}; trusting the weights.")
         model = CrossAttentionProtoNet(
             encoder,
             encoder_output_dim=enc_dim,
@@ -339,6 +358,17 @@ def _load_model_from_checkpoint(
             use_ffn=config.get("use_ffn", False),
             query_label_mode=config.get("query_label_mode", "unknown_token"),
             use_nested_tensors=config.get("use_nested_tensors", False),
+            # Defaults below reproduce the behaviour of checkpoints written before
+            # these flags existed, so old checkpoints keep loading unchanged. Note
+            # separate_mlp_f defaults to False here but True in the constructor:
+            # pre-flag checkpoints were all trained with a single shared MLP_F.
+            norm_position=config.get("norm_position", "pre"),
+            separate_mlp_f=inferred_sep,
+            attn_order=config.get("attn_order", "sequential"),
+            softmax_mode=config.get("softmax_mode", "standard"),
+            share_final_norm=inferred_share,
+            # pre-DC-13 checkpoints were trained with an unscaled logit
+            logit_scale=config.get("logit_scale", "none"),
         ).to(device)
     else:
         cls   = PrototypicalNetworkClassification if model_type == "classification" \

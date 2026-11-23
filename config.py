@@ -1,6 +1,12 @@
 """
-Central path configuration. Edit ENV to switch between local and server; all other
-modules import their paths from here rather than hard-coding them.
+Central path configuration. Paths are derived from this file's own location, so the
+same code runs on any machine without editing; all other modules import their paths
+from here rather than hard-coding them.
+
+Environment overrides (set these in the Condor submit file if needed):
+    PTN_ROOT          repo root            (default: the directory holding this file)
+    PTN_DATA          data directory       (default: <repo>/data)
+    PTN_NUM_WORKERS   DataLoader workers   (see train.py; match request_cpus on Condor)
 
 Run tag format  (use make_run_tag() to build):
     {enc}_{head}_{split}_{distance}_{nsup}_seed{seed}
@@ -23,17 +29,36 @@ Output layout (per run_tag):
 """
 import os
 
-# Auto-detect: if /netscratch exists we're on the Pegasus cluster, otherwise local.
-ENV = "server" if os.path.exists("/netscratch") else "local"
+# ---------------------------------------------------------------------------
+# Repo root resolution
+# ---------------------------------------------------------------------------
+# Resolved from this file's own location, so the same code runs unchanged on any
+# machine. This replaced a probe for "/netscratch", which was specific to the old
+# Pegasus cluster: on conduit2 that path does not exist, so the probe silently fell
+# through to the hardcoded Windows paths and every job failed with a confusing
+# "D:/Thesis/..." not-found error.
+#
+# Override with PTN_ROOT when code and data live in different trees (e.g. code in
+# $HOME, data on fast scratch). Condor submit files should set it explicitly.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.environ.get("PTN_ROOT", _HERE)
 
-if ENV == "local":
-    FSMOL_DIR   = "D:/Thesis/PTN/data/fsmol"
-    DRUGOOD_DIR = "D:/Thesis/PTN/data/drugood"
-    REPO_ROOT   = "D:/Thesis/PTN"
-else:
-    FSMOL_DIR   = "/netscratch/jobanputra/PTN/data/fsmol"
-    DRUGOOD_DIR = "/netscratch/jobanputra/PTN/data/drugood"
-    REPO_ROOT   = "/netscratch/jobanputra/PTN"
+# Data may sit outside the repo (scratch space); PTN_DATA points at the directory
+# that holds fsmol/ and drugood/. Defaults to <repo>/data.
+DATA_ROOT = os.environ.get("PTN_DATA", os.path.join(REPO_ROOT, "data"))
+
+FSMOL_DIR   = os.path.join(DATA_ROOT, "fsmol")
+# FS-Mol ships a LARGER raw pool than the benchmark uses. Its README:
+#   "we specify which tasks are to be used with the file datasets/fsmol-0.1.json,
+#    a default list of tasks for each data fold. We note that the complete dataset
+#    contains many more tasks."
+# Verified 2026-11-18: fsmol-0.1.json = 4,938 train tasks; entire_train_set.json =
+# 26,868, which is exactly what data/fsmol/train contains. valid (40) and test (157)
+# are identical in both. Training on all 26,868 is a legitimate FS-Mol option but the
+# numbers are then NOT comparable to published FS-Mol baselines.
+FSMOL_TASK_LIST = os.path.join(DATA_ROOT, "fsmol_meta", "fsmol-0.1.json")
+DRUGOOD_DIR = os.path.join(DATA_ROOT, "drugood")
+CUSTOM_DIR  = os.path.join(DATA_ROOT, "custom")
 FSMOL_TRAIN = os.path.join(FSMOL_DIR, "train")
 FSMOL_VAL   = os.path.join(FSMOL_DIR, "valid")
 FSMOL_TEST  = os.path.join(FSMOL_DIR, "test")
@@ -43,6 +68,36 @@ FSMOL_TEST  = os.path.join(FSMOL_DIR, "test")
 # Both training (shift-aware episodes) and evaluation use this cutoff.
 SCAFFOLD_OOD_CUTOFF  = 0.70
 SCAFFOLD_OOD_VARIANT = "butina_c70"   # filename tag for CSVs
+
+# ---------------------------------------------------------------------------
+# Support-set class composition  (TASKS.md 5.2 / 5.3)
+# ---------------------------------------------------------------------------
+# How the active/inactive composition of a support (context) set is chosen.
+#
+#   "proportional"  keep the assay's natural active fraction, guaranteeing >=1 of the
+#                   minority class. This is what episodic TRAINING does
+#                   (StratifiedShuffleSplit in EpisodeSampler), what the FS-Mol paper
+#                   does, and what MHNfs inherits from it. It is also the only option
+#                   that is realistic at deployment: on a new target you cannot build a
+#                   50/50 support set without already knowing the labels you are trying
+#                   to predict.
+#   "balanced"      aim for 50/50, capped by class availability. Defensible on DrugOOD,
+#                   whose train pool is 78-94% active, because a proportional context of
+#                   16 leaves the inactive prototype built from ~1-3 molecules and the
+#                   ranking metrics then measure prototype noise rather than the
+#                   representation. Keep it as a reported ABLATION, not the default.
+#
+# Why this is a single central knob: DrugOOD evaluation previously hardcoded 50/50 while
+# training sampled proportionally, and the code comment claimed the two matched. They did
+# not, so every DrugOOD number was produced under a support distribution the model had
+# never trained on. Train and eval must read the same setting.
+#
+# Override per run with PTN_SUPPORT_SAMPLING so the ablation needs no code edit.
+SUPPORT_SAMPLING = os.environ.get("PTN_SUPPORT_SAMPLING", "proportional")
+if SUPPORT_SAMPLING not in ("proportional", "balanced"):
+    raise ValueError(
+        f"PTN_SUPPORT_SAMPLING must be 'proportional' or 'balanced', "
+        f"got {SUPPORT_SAMPLING!r}")
 
 OUTPUT_DIR       = os.path.join(REPO_ROOT, "outputs")
 BASELINE_CSV_DIR = os.path.join(OUTPUT_DIR, "baselines", "csvs")

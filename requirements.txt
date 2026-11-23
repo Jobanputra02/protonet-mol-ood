@@ -1,6 +1,21 @@
+# Core
 torch>=2.0.0
 numpy>=1.24.0
-rdkit>=2023.3.1
 scipy
 pandas
+
+# Cheminformatics
+rdkit>=2023.3.1
+
+# Needed by data.py (StratifiedShuffleSplit), evaluate.py (heads/metrics) and
+# context_model.py (average_precision_score). Was missing from this file.
+scikit-learn
+
+# GNN encoder (FSMolGNNEncoder) and graph episode collation. Was missing.
+# Install must match the torch/CUDA build - see condor/setup_env.sub.
+torch-geometric
+
+# Analysis figures only (Analysis/**). Not needed for training or evaluation.
+matplotlib
+
 psutil

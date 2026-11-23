@@ -265,6 +265,11 @@ class AssayDataset:
 # EPISODE SAMPLER
 # =============================================================================
 
+# FS-Mol's sampler requires the query ("test") fold to hold at least 2 molecules and
+# both classes to appear in both folds; below that it raises and the task is skipped.
+MIN_QUERY = 2
+
+
 class EpisodeSampler:
     """
     Samples one episode (support + query) from an AssayDataset.
@@ -322,8 +327,10 @@ class EpisodeSampler:
                                     training_split: str = "similarity",
                                     use_binary: bool = False):
         """Group-disjoint episode (scaffold or similarity), as tensors."""
-        sup_idx, qry_idx = self._get_episode_indices_shift_aware(dataset, training_split)
-        return self._indices_to_tensors(dataset, sup_idx, qry_idx, use_binary=use_binary)
+        sp = self._get_episode_indices_shift_aware(dataset, training_split)
+        if sp is None:
+            return None
+        return self._indices_to_tensors(dataset, sp[0], sp[1], use_binary=use_binary)
 
     def _sample_random_episode(self, dataset: AssayDataset, use_binary: bool = False):
         """
@@ -332,8 +339,10 @@ class EpisodeSampler:
         matching the FS-Mol paper's StratifiedShuffleSplit approach. Falls back to
         pure random sampling when binary labels are unavailable or all-one-class.
         """
-        sup_idx, qry_idx = self._get_episode_indices_random(dataset)
-        return self._indices_to_tensors(dataset, sup_idx, qry_idx, use_binary=use_binary)
+        sp = self._get_episode_indices_random(dataset)
+        if sp is None:
+            return None
+        return self._indices_to_tensors(dataset, sp[0], sp[1], use_binary=use_binary)
 
     def _indices_to_tensors(self, dataset, sup_idx, qry_idx, use_binary: bool = False):
         # fingerprints is a list of 1D numpy arrays - stack only the rows we need.
@@ -371,14 +380,16 @@ class EpisodeSampler:
         (no duplication, both classes enforced). Falls back to random when no valid
         group-disjoint split exists for this assay.
         """
-        n_sup_target    = self._draw_n_support()
-        n_total         = len(dataset)
-        adaptive_target = min(n_sup_target, max(2, n_total // 2))
+        n_sup_target = self._draw_n_support()
+        n_total      = len(dataset)
+        if n_total < n_sup_target + MIN_QUERY:
+            return None                      # skip, do not shrink
+        adaptive_target = n_sup_target
 
         if training_split == "scaffold":
             groups = dataset.scaffold_groups
             if len(groups) < 2:
-                return self._get_episode_indices_random(dataset)
+                return self._get_episode_indices_random(dataset, n_sup_target)
         else:  # "similarity" — Butina fingerprint clustering
             pool_cap = max(4 * (n_sup_target + self.n_query), 1024)
             if n_total > pool_cap:
@@ -395,23 +406,41 @@ class EpisodeSampler:
             getattr(dataset, "binary_labels", None),
             adaptive_target, "scaffold", np.random,
             n_query_cap=self.n_query, require_both_classes=True,
-            min_support=min(8, adaptive_target),
+            min_support=None,   # exact size; see the skip-don't-shrink note above
         )
         if sp is None:
-            return self._get_episode_indices_random(dataset)
+            return self._get_episode_indices_random(dataset, n_sup_target)
         return sp
 
-    def _get_episode_indices_random(self, dataset: "AssayDataset"):
+    def _get_episode_indices_random(self, dataset: "AssayDataset", n_sup_target=None):
         """
         Stratified support/query split - preserves active/inactive class proportion.
-        Matches FS-Mol paper's StratifiedShuffleSplit. Falls back to pure random
-        when binary labels are missing or the assay is all one class.
+
+        SKIP, DO NOT SHRINK. The support size is exact: an assay that cannot supply
+        n_sup_target support molecules plus MIN_QUERY query molecules returns None and
+        the caller draws a different assay. This matches FS-Mol, whose
+        StratifiedTaskSampler hands support_size to StratifiedShuffleSplit(train_size=)
+        and lets the task fail; only the query fold may shrink.
+
+        The previous behaviour, `n_sup = min(n_support, n_total // 2)`, silently trained
+        at support 32-63 while the run was labelled 64 - 58% of assays at n_support=64,
+        mean effective support 51.4. See TASKS.md 2.12.6.
+
+        For a list-valued n_support the size is drawn FIRST and the assay is then gated
+        against THAT size, so a multi-size schedule admits an assay only for the draws
+        it can actually serve (it previously gated on min(n_support), which let a
+        64-molecule assay into a 64-support episode).
+
+        Returns (support_idx, query_idx), or None if this assay cannot serve the draw.
         """
         from sklearn.model_selection import StratifiedShuffleSplit
-        n_sup_target = self._draw_n_support()
-        n_total      = len(dataset)
-        n_sup        = min(n_sup_target, n_total // 2)
-        n_qry        = min(self.n_query, n_total - n_sup)
+        if n_sup_target is None:
+            n_sup_target = self._draw_n_support()
+        n_total = len(dataset)
+        if n_total < n_sup_target + MIN_QUERY:
+            return None                      # skip; the caller picks another assay
+        n_sup = n_sup_target
+        n_qry = min(self.n_query, n_total - n_sup)
 
         labels = dataset.binary_labels
         can_stratify = (
@@ -426,11 +455,17 @@ class EpisodeSampler:
                 sss = StratifiedShuffleSplit(n_splits=1, train_size=n_sup, random_state=None)
                 sup_idx, remaining = next(sss.split(np.arange(n_total), labels))
                 qry_idx = remaining[:n_qry]
-                return sup_idx, qry_idx
+                # FS-Mol raises FoldTooSmallException unless BOTH folds carry both
+                # classes: a prototype needs one of each, and dAUPRC is undefined on a
+                # single-class query.
+                if (len(np.unique(labels[sup_idx])) >= 2
+                        and len(np.unique(labels[qry_idx])) >= 2):
+                    return sup_idx, qry_idx
+                return None
             except ValueError:
-                pass  # fall through to random if stratification fails (e.g. too few per class)
+                return None     # stratification impossible -> skip, do not shrink
 
-        # Fallback: pure random
+        # No usable binary labels: fall back to a uniform draw at the exact size.
         all_idx = np.random.permutation(n_total)
         return all_idx[:n_sup], all_idx[n_sup:n_sup + n_qry]
 
@@ -562,12 +597,17 @@ def stratified_context_indices(binary_labels, n_context: int, rng,
         the minority class. On DrugOOD (78-94% active) this still leaves the inactive
         prototype built from ~1 molecule at small context sizes -> very noisy ranking.
 
-    balanced=True: aim for a 50/50 active/inactive context,
-        capped by class availability, spillover to the majority class only if one class is
-        too small. This matches training (median 50/50 episodes) and stabilises the inactive
-        prototype so the ranking metrics (AUROC / ΔAUPRC) reflect the representation rather
-        than a 1-molecule prototype. Choosing the support composition is legitimate - it does
-        NOT touch the fixed test set.
+    balanced=True: aim for a 50/50 active/inactive context, capped by class availability,
+        spilling over to the majority class only if one class is too small. It stabilises
+        the minority prototype so the ranking metrics (AUROC / dAUPRC) reflect the
+        representation rather than a 1-molecule prototype, and choosing the support
+        composition is legitimate - it does NOT touch the fixed test set.
+
+        NOTE: this does NOT match training. An earlier version of this docstring claimed
+        it "matches training (median 50/50 episodes)"; that was wrong - episodic training
+        samples support PROPORTIONALLY (StratifiedShuffleSplit in EpisodeSampler). Pick
+        the mode through config.SUPPORT_SAMPLING, which both training and evaluation
+        read, rather than hardcoding it here. See TASKS.md 5.2.
 
     Falls back to uniform sampling when labels are missing or single-class.
     """
@@ -714,7 +754,7 @@ class FSMolEpisodeDataset(Dataset):
         self.sampler           = EpisodeSampler(n_support, n_query)
         self.training_split    = training_split
         self.use_binary_labels = use_binary_labels
-        n_sup_str = str(n_support) if isinstance(n_support, int) else f"{min(n_support)}–{max(n_support)} (variable)"
+        n_sup_str = str(n_support) if isinstance(n_support, int) else f"{min(n_support)}-{max(n_support)} (variable)"
         print(f"  Streaming ECFP dataset: {len(self.all_files)} training files, "
               f"n_support={n_sup_str}, training_split={training_split}")
 
@@ -729,10 +769,15 @@ class FSMolEpisodeDataset(Dataset):
             path = self.all_files[np.random.randint(len(self.all_files))]
             ds = _load_assay_file(path)
             if len(ds) >= self.sampler.n_support_min:
-                return self.sampler.sample_episode(
+                ep = self.sampler.sample_episode(
                     ds, training_split=self.training_split, use_binary=self.use_binary_labels
                 )
-        raise RuntimeError("Could not find a valid assay after 200 attempts.")
+                if ep is not None:          # None = assay cannot serve the drawn size
+                    return ep
+        raise RuntimeError(
+            "Could not find a valid assay after 200 attempts. With skip-don't-shrink "
+            "the support size is exact, so n_support must be small enough that some "
+            "assays can serve it (see TASKS.md 2.12.6).")
 
 
 # =============================================================================
@@ -834,7 +879,7 @@ class FSMolGraphEpisodeDataset(Dataset):
         self.fsmol_style       = fsmol_style
         self.use_binary_labels = use_binary_labels
         self._setup_graph_builder()
-        n_sup_str = str(n_support) if isinstance(n_support, int) else f"{min(n_support)}–{max(n_support)} (variable)"
+        n_sup_str = str(n_support) if isinstance(n_support, int) else f"{min(n_support)}-{max(n_support)} (variable)"
         print(f"  Streaming GNN dataset: {len(self.all_files)} training files, "
               f"n_support={n_sup_str}, training_split={training_split}")
 
@@ -869,10 +914,13 @@ class FSMolGraphEpisodeDataset(Dataset):
             if len(ds) < self.sampler.n_support_min:
                 continue
             if self.training_split in ("scaffold", "similarity"):
-                sup_idx, qry_idx = self.sampler._get_episode_indices_shift_aware(
+                sp = self.sampler._get_episode_indices_shift_aware(
                     ds, training_split=self.training_split)
             else:
-                sup_idx, qry_idx = self.sampler._get_episode_indices_random(ds)
+                sp = self.sampler._get_episode_indices_random(ds)
+            if sp is None:      # assay cannot serve the drawn support size -> retry
+                continue
+            sup_idx, qry_idx = sp
             sup_graphs = self._build_graphs([ds.scaffolds[i] for i in sup_idx])
             qry_graphs = self._build_graphs([ds.scaffolds[i] for i in qry_idx])
             if self.use_binary_labels and ds.binary_labels is not None:
@@ -965,9 +1013,14 @@ class DrugOODEvalDataset:
         # active, so uniform sampling leaves the inactive prototype built from ~0-1
         # molecules at small context sizes. Stratification keeps both classes present.
         if use_binary and self.context_binary is not None:
-            # balanced=True: 50/50 active/inactive support so the inactive
-            # prototype is stable on DrugOOD's 78-94%-active pool.
-            idx = stratified_context_indices(self.context_binary, n_ctx, rng, balanced=True)
+            # Composition comes from config.SUPPORT_SAMPLING so that evaluation uses the
+            # same rule as training. This used to be hardcoded balanced=True with a
+            # comment claiming it "matches training (median 50/50 episodes)" - it did
+            # not: training samples proportionally. See TASKS.md 5.2.
+            from config import SUPPORT_SAMPLING
+            idx = stratified_context_indices(
+                self.context_binary, n_ctx, rng,
+                balanced=(SUPPORT_SAMPLING == "balanced"))
         else:
             idx = rng.choice(len(self.context_fp), size=n_ctx, replace=False)
 
@@ -1051,6 +1104,35 @@ def load_fsmol_assay(filepath: str) -> tuple["AssayDataset", dict]:
     stats = {"n_total": n_total, "n_inexact": n_inexact,
              "n_invalid": n_invalid, "n_kept": n}
     return dataset, stats
+
+
+def fsmol_benchmark_tasks(split: str = "train"):
+    """Task ids of the official FS-Mol benchmark fold, or None if the list is absent.
+
+    FS-Mol's download ships 26,868 train tasks but the benchmark defines 4,938; the
+    rest are extra tasks the README explicitly flags as optional. Training on the full
+    pool is allowed but is NOT comparable to published FS-Mol numbers, and the extra
+    pool is unfiltered (it contains single-class assays). See config.FSMOL_TASK_LIST.
+    """
+    import json as _json
+    from config import FSMOL_TASK_LIST
+    if not os.path.exists(FSMOL_TASK_LIST):
+        return None
+    with open(FSMOL_TASK_LIST) as fh:
+        return set(_json.load(fh)[split])
+
+
+def filter_to_benchmark(files, split: str = "train"):
+    """Keep only the files whose task id is in the official benchmark fold."""
+    keep = fsmol_benchmark_tasks(split)
+    if keep is None:
+        print(f"  [fsmol] no task list at config.FSMOL_TASK_LIST - using all "
+              f"{len(files):,} files")
+        return list(files)
+    out = [f for f in files
+           if os.path.basename(f).replace(".jsonl.gz", "") in keep]
+    print(f"  [fsmol] benchmark '{split}' task list: {len(out):,} of {len(files):,} files")
+    return out
 
 
 def load_fsmol_split(split_dir: str, max_assays: Optional[int] = None) -> list["AssayDataset"]:

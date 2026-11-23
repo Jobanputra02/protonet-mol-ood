@@ -198,7 +198,7 @@ class MicGraphEpisodeDataset(Dataset):
         self.assay_ids = [a for a in assay_ids if store.get(a) is not None]
         missing = len(assay_ids) - len(self.assay_ids)
         if missing:
-            print(f"  [MicGraphEpisodeDataset] {missing} assay IDs not in store — skipped")
+            print(f"  [MicGraphEpisodeDataset] {missing} assay IDs not in store - skipped")
 
         self.store          = store
         self.n_episodes     = n_episodes_per_epoch
@@ -240,10 +240,13 @@ class MicGraphEpisodeDataset(Dataset):
             if ds is None or len(ds) < self.sampler.n_support_min:
                 continue
             if self.training_split in ("scaffold", "similarity"):
-                sup_idx, qry_idx = self.sampler._get_episode_indices_shift_aware(
+                sp = self.sampler._get_episode_indices_shift_aware(
                     ds, training_split=self.training_split)
             else:
-                sup_idx, qry_idx = self.sampler._get_episode_indices_random(ds)
+                sp = self.sampler._get_episode_indices_random(ds)
+            if sp is None:      # assay cannot serve the drawn support size -> retry
+                continue
+            sup_idx, qry_idx = sp
             sup_graphs = self._build_graphs([ds.scaffolds[i] for i in sup_idx])
             qry_graphs = self._build_graphs([ds.scaffolds[i] for i in qry_idx])
             if ds.binary_labels is not None:
@@ -293,7 +296,7 @@ class MicEpisodeDataset(Dataset):
         self.assay_ids = [a for a in assay_ids if store.get(a) is not None]
         missing = len(assay_ids) - len(self.assay_ids)
         if missing:
-            print(f"  [MicEpisodeDataset] {missing} assay IDs not in store (too small or invalid SMILES) — skipped")
+            print(f"  [MicEpisodeDataset] {missing} assay IDs not in store (too small or invalid SMILES) - skipped")
 
         self.store          = store
         self.n_episodes     = n_episodes_per_epoch
@@ -317,7 +320,12 @@ class MicEpisodeDataset(Dataset):
             ds  = self.store.get(aid)
             if ds is None or len(ds) < self.sampler.n_support_min:
                 continue
-            return self.sampler.sample_episode(
+            ep = self.sampler.sample_episode(
                 ds, training_split=self.training_split, use_binary=self.use_binary
             )
-        raise RuntimeError("Could not sample a valid MIC episode after 200 attempts.")
+            if ep is not None:   # None = assay cannot serve the drawn support size
+                return ep
+        raise RuntimeError(
+            "Could not sample a valid MIC episode after 200 attempts. With "
+            "skip-don't-shrink the support size is exact, so n_support must be small "
+            "enough for some assays to serve it (TASKS.md 2.12.6).")

@@ -57,7 +57,7 @@ try:
     HAS_UMAP = True
 except ImportError:
     HAS_UMAP = False
-    print("[WARN] umap-learn not installed — UMAP skipped", flush=True)
+    print("[WARN] umap-learn not installed - UMAP skipped", flush=True)
 
 # ── Paths ───────────────────────────────────────────────────────────────────
 BASE        = Path("/netscratch/jobanputra/PTN")
@@ -239,7 +239,7 @@ def plot_nn_tanimoto(sims_dict, title):
 def plot_umap(fp_mat, labels_num, title, cmap="tab10"):
     if not HAS_UMAP or fp_mat is None or len(fp_mat) == 0:
         return None
-    print(f"    UMAP {len(fp_mat):,} pts…", flush=True)
+    print(f"    UMAP {len(fp_mat):,} pts...", flush=True)
     reducer = umap_lib.UMAP(n_components=2, random_state=42, n_jobs=8,
                              n_neighbors=30, min_dist=0.1, metric="jaccard")
     emb = reducer.fit_transform(fp_mat)
@@ -410,14 +410,14 @@ fsmol_split_b64 = fig_bar(pd.Series(split_counts).sort_values(ascending=False),
 
 # Molecular properties (deduped SMILES)
 all_fsmol_smiles = [s for v in fsmol_assays.values() for s in v["smiles"]]
-print(f"  Properties on {len(all_fsmol_smiles):,} SMILES (deduped)…", flush=True)
+print(f"  Properties on {len(all_fsmol_smiles):,} SMILES (deduped)...", flush=True)
 fsmol_prop_df = props_df(all_fsmol_smiles)
-print(f"  → {len(fsmol_prop_df):,} unique valid molecules", flush=True)
+print(f"  -> {len(fsmol_prop_df):,} unique valid molecules", flush=True)
 fsmol_prop_b64 = plot_prop_grid(fsmol_prop_df, "FS-Mol — Molecular Properties")
 fsmol_stats["n_unique_mols"] = len(fsmol_prop_df)
 
 # Murcko scaffold diversity
-print("  Murcko diversity…", flush=True)
+print("  Murcko diversity...", flush=True)
 scaff_divs = []
 for v in fsmol_assays.values():
     sc = [murcko_smi(s) for s in v["smiles"][:200] if s]
@@ -427,7 +427,7 @@ for v in fsmol_assays.values():
 fsmol_stats["scaffold_diversity_mean"] = float(np.mean(scaff_divs)) if scaff_divs else 0
 
 # NN-Tanimoto
-print("  NN-Tanimoto…", flush=True)
+print("  NN-Tanimoto...", flush=True)
 fsmol_fps_nn = [ecfp4(s) for s in np.random.choice(all_fsmol_smiles, min(8000, len(all_fsmol_smiles)), replace=False)]
 fsmol_fps_nn = [fp for fp in fsmol_fps_nn if fp is not None]
 fsmol_nn_sims = nn_tanimoto_dist(fsmol_fps_nn, n=5000)
@@ -435,7 +435,7 @@ fsmol_nn_b64  = plot_nn_tanimoto({"FS-Mol": fsmol_nn_sims}, "FS-Mol — NN-Tanim
 fsmol_stats["nn_tanimoto_mean"] = float(np.mean(fsmol_nn_sims)) if fsmol_nn_sims else 0
 
 # Activity cliffs
-print("  Activity cliffs…", flush=True)
+print("  Activity cliffs...", flush=True)
 fsmol_cliff_dict = {
     aid: [(s, lb) for s, lb in zip(v["smiles"][:80], v["labels"][:80])]
     for aid, v in fsmol_assays.items()
@@ -444,7 +444,7 @@ fsmol_cliff = activity_cliff_rate(fsmol_cliff_dict, n_assays=150)
 fsmol_stats["activity_cliff_rate"] = float(fsmol_cliff)
 
 # UMAP
-print("  UMAP…", flush=True)
+print("  UMAP...", flush=True)
 all_lbs_fsmol = [lb for v in fsmol_assays.values() for lb in v["labels"]]
 umap_smi_fs = all_fsmol_smiles[:]
 umap_lbs_fs = all_lbs_fsmol[:]
@@ -530,7 +530,7 @@ for ep, df in drugood.items():
 
     # Molecular properties (deduped)
     smiles = df["smiles"].dropna().tolist() if "smiles" in df.columns else []
-    print(f"    properties {len(smiles):,}…", flush=True)
+    print(f"    properties {len(smiles):,}...", flush=True)
     pdf = props_df(smiles)
     drugood_prop_b64s[short] = plot_prop_grid(pdf, f"DrugOOD {short} — Properties", color)
     drugood_ep_stats[short]["n_unique_mols"] = len(pdf)
@@ -657,7 +657,7 @@ mic_doc_b64 = (fig_hbar(mic_df["document_chembl_id"].value_counts(), "curated_mi
                if "document_chembl_id" in mic_df.columns else None)
 
 # Properties (deduped)
-print(f"  Properties {len(mic_smiles):,}…", flush=True)
+print(f"  Properties {len(mic_smiles):,}...", flush=True)
 mic_prop_df  = props_df(mic_smiles)
 mic_prop_b64 = plot_prop_grid(mic_prop_df, "curated_mic — Molecular Properties", "#5a9e6f")
 mic_stats["n_unique_mols"] = len(mic_prop_df)
@@ -670,7 +670,7 @@ mic_nn_b64  = plot_nn_tanimoto({"curated_mic": mic_nn_sims}, "curated_mic — NN
 mic_stats["nn_tanimoto_mean"] = float(np.mean(mic_nn_sims)) if mic_nn_sims else 0
 
 # UMAP
-print("  UMAP curated_mic…", flush=True)
+print("  UMAP curated_mic...", flush=True)
 mic_lbs_all = mic_df["is_potent"].tolist() if "is_potent" in mic_df.columns else [0]*len(mic_smiles)
 smi_u = mic_smiles[:]; lbs_u = mic_lbs_all[:]
 if len(smi_u) > 50000:
@@ -683,7 +683,7 @@ lbs_u  = [lb for lb,v in zip(lbs_u, valid) if v]
 mic_umap_b64 = plot_umap(fps_to_mat(fps_u), lbs_u, "curated_mic UMAP (is_potent)", "RdYlGn")
 
 # Activity cliffs
-print("  Activity cliffs…", flush=True)
+print("  Activity cliffs...", flush=True)
 if mic_g is not None:
     mic_cliff_dict = {
         aid: [(row["canonical_smiles"], row["is_potent"])
@@ -769,11 +769,11 @@ else:
     ch_qual_b64 = None
 
 # Properties (deduped)
-print(f"  Properties {len(ch_smiles):,} (deduped)…", flush=True)
+print(f"  Properties {len(ch_smiles):,} (deduped)...", flush=True)
 ch_prop_df  = props_df(ch_smiles)
 ch_prop_b64 = plot_prop_grid(ch_prop_df, "chembl36 — Molecular Properties", "#9b5de5")
 ch_stats["n_unique_mols"] = len(ch_prop_df)
-print(f"  → {len(ch_prop_df):,} unique valid molecules", flush=True)
+print(f"  -> {len(ch_prop_df):,} unique valid molecules", flush=True)
 
 # NN-Tanimoto
 fps_nn_ch = [ecfp4(s) for s in np.random.choice(ch_smiles, min(6000,len(ch_smiles)), replace=False)]
@@ -783,7 +783,7 @@ ch_nn_b64  = plot_nn_tanimoto({"chembl36": ch_nn_sims}, "chembl36 — NN-Tanimot
 ch_stats["nn_tanimoto_mean"] = float(np.mean(ch_nn_sims)) if ch_nn_sims else 0
 
 # UMAP
-print("  UMAP chembl36…", flush=True)
+print("  UMAP chembl36...", flush=True)
 ch_lbs_all = ch_df["is_potent"].tolist() if "is_potent" in ch_df.columns else [0]*len(ch_smiles)
 smi_uc = ch_smiles[:]; lbs_uc = ch_lbs_all[:]
 if len(smi_uc) > 50000:
@@ -803,7 +803,7 @@ print(f"  chembl36 done. {time.time()-t0:.0f}s", flush=True)
 print("\n[5] Cross-dataset", flush=True)
 
 # Compound overlap (canonical SMILES sets)
-print("  Building canonical SMILES sets…", flush=True)
+print("  Building canonical SMILES sets...", flush=True)
 def can_set(smi_list, cap=300000):
     out = set()
     for s in smi_list[:cap]:
@@ -839,7 +839,7 @@ plt.tight_layout()
 cross_overlap_b64 = fig_to_b64(fig_ov)
 
 # Property comparison
-print("  Property comparison…", flush=True)
+print("  Property comparison...", flush=True)
 do_prop_cross = props_df(do_all_smi[:200000]).assign(dataset="DrugOOD") if do_all_smi else pd.DataFrame()
 _frames = [
     fsmol_prop_df.assign(dataset="FS-Mol"),
@@ -884,7 +884,7 @@ nn_compare_b64 = plot_nn_tanimoto({
 }, "Cross-dataset NN-Tanimoto comparison")
 
 # Combined UMAP (10K per dataset)
-print("  Combined UMAP…", flush=True)
+print("  Combined UMAP...", flush=True)
 combo_fps = []; combo_ds = []
 for di, (name, smi_pool) in enumerate([
     ("FS-Mol",      all_fsmol_smiles),
